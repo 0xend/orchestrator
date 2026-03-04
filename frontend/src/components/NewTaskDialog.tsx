@@ -50,7 +50,7 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
 
   return (
     <form className="panel stack" onSubmit={submit}>
-      <h3 style={{ margin: 0 }}>New Task</h3>
+      <h3>New Task</h3>
       <select value={repoName} onChange={(event) => setRepoName(event.target.value)}>
         {repos.map((repo) => (
           <option key={repo.name} value={repo.name}>
@@ -61,13 +61,13 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
       <input
         value={title}
         onChange={(event) => setTitle(event.target.value)}
-        placeholder="Title"
+        placeholder="Task title"
         required
       />
       <textarea
         value={description}
         onChange={(event) => setDescription(event.target.value)}
-        placeholder="Describe the task"
+        placeholder="Describe what needs to be done..."
         rows={4}
         required
       />
