@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+
+# Local env/runtime
+*.log
+backend/orchestrator.db
+backend/.env
+frontend/.env.local
+.worktree.env
+.worktree.startup.env
+
+# macOS
+.DS_Store

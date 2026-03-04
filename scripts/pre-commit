@@ -1,0 +1,68 @@
+#!/bin/bash
+
+# Pre-commit hook: Run linting, formatting, unit tests, and E2E tests before commit
+# This ensures we never push code that won't pass CI
+# To skip this hook, use: git commit --no-verify
+
+set -e
+
+echo "Running pre-commit checks..."
+
+# Get the project root directory
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Backend checks
+echo ""
+echo "=== Checking backend ==="
+cd backend
+.venv/bin/ruff check src/
+.venv/bin/ruff format --check src/
+cd ..
+
+# Frontend checks
+echo ""
+echo "=== Checking frontend ==="
+cd frontend
+npm run lint
+npm run typecheck
+cd ..
+
+# Run backend tests
+echo ""
+echo "=== Running backend tests ==="
+make test-backend
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ Backend tests failed. Fix the tests before committing."
+    exit 1
+fi
+
+# Run frontend tests
+echo ""
+echo "=== Running frontend tests ==="
+make test-frontend
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ Frontend tests failed. Fix the tests before committing."
+    exit 1
+fi
+
+# Run E2E tests if services are running
+echo ""
+echo "=== Checking if services are running for E2E tests ==="
+if docker compose -f docker-compose.dev.yml ps --status running 2>/dev/null | grep -q "bakery-"; then
+    echo "Services detected, running E2E tests..."
+    make test-e2e
+    if [ $? -ne 0 ]; then
+        echo ""
+        echo "❌ E2E tests failed. Fix the tests before committing."
+        exit 1
+    fi
+else
+    echo "⚠️  Services not running, skipping E2E tests."
+    echo "   Run 'make dev' to start services if you want to run E2E tests."
+fi
+
+echo ""
+echo "✅ All pre-commit checks passed!"

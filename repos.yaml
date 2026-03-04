@@ -1,0 +1,17 @@
+repos:
+  - name: "orchestrator"
+    path: "/Users/ericdeno/orchestrator"
+    description: "Orchestrator web app"
+    startup:
+      command: ["docker", "compose", "up", "-d"]
+      cwd: "."
+      env: {}
+      ready_timeout_seconds: 180
+    preview:
+      strategy: "fixed_url"
+      url: "http://localhost:13000"
+      stdout_regex: null
+      healthcheck_url: null
+    pr:
+      base_branch: "main"
+      draft: true

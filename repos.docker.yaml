@@ -1,0 +1,17 @@
+repos:
+  - name: "orchestrator"
+    path: "/workspace"
+    description: "Orchestrator web app (container runtime)"
+    startup:
+      command: ["sleep", "infinity"]
+      cwd: "."
+      env: {}
+      ready_timeout_seconds: 5
+    preview:
+      strategy: "fixed_url"
+      url: "http://localhost:13000"
+      stdout_regex: null
+      healthcheck_url: null
+    pr:
+      base_branch: "main"
+      draft: true

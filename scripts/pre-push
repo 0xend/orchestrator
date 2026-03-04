@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# Pre-push hook: Lightweight check before pushing
+# Full tests (including E2E) run on pre-commit to catch issues early
+# To skip this hook, use: git push --no-verify
+
+echo "Running pre-push checks..."
+
+# Get the project root directory
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Quick sanity check - just verify lint passes
+# Full tests already ran on pre-commit
+echo ""
+echo "=== Quick lint verification ==="
+make lint
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "❌ Lint checks failed. Fix the issues before pushing."
+    exit 1
+fi
+
+echo ""
+echo "✅ Pre-push checks passed! Proceeding with push..."
+exit 0

@@ -1,0 +1,182 @@
+#!/bin/bash
+# Port allocation and registry management for worktrees
+#
+# Each worktree gets a unique port offset to avoid conflicts when running
+# multiple development environments in parallel.
+#
+# Port allocation scheme:
+#   Base ports (main repo): DB=5432, Test DB=5433, Backend=8000, Frontend=3000
+#   Worktree ports = Base + (offset * 10)
+#   Example offset 1: DB=5442, Test DB=5443, Backend=8010, Frontend=3010
+
+set -e
+
+REGISTRY_FILE="$HOME/.orchestrator-worktree-ports"
+MAX_OFFSET=10  # Support up to 10 parallel worktrees
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+NC='\033[0m'
+
+error() { echo -e "${RED}Error:${NC} $1" >&2; }
+success() { echo -e "${GREEN}$1${NC}"; }
+
+# Allocate a port offset for a worktree
+# Returns the offset number (1-10)
+allocate_offset() {
+    local worktree_name="$1"
+
+    if [[ -z "$worktree_name" ]]; then
+        error "Worktree name required"
+        exit 1
+    fi
+
+    # Create registry if not exists
+    touch "$REGISTRY_FILE"
+
+    # Check if already allocated
+    local existing
+    existing=$(grep "^${worktree_name}:" "$REGISTRY_FILE" 2>/dev/null | cut -d: -f2)
+    if [[ -n "$existing" ]]; then
+        echo "$existing"
+        return 0
+    fi
+
+    # Find first available offset
+    for offset in $(seq 1 $MAX_OFFSET); do
+        if ! grep -q ":${offset}$" "$REGISTRY_FILE" 2>/dev/null; then
+            echo "${worktree_name}:${offset}" >> "$REGISTRY_FILE"
+            echo "$offset"
+            return 0
+        fi
+    done
+
+    error "No available port offsets (max $MAX_OFFSET worktrees)"
+    exit 1
+}
+
+# Release a port offset when worktree is removed
+release_offset() {
+    local worktree_name="$1"
+
+    if [[ -z "$worktree_name" ]]; then
+        error "Worktree name required"
+        exit 1
+    fi
+
+    if [[ -f "$REGISTRY_FILE" ]]; then
+        # Use temp file for portability (macOS sed -i requires backup extension)
+        local temp_file
+        temp_file=$(mktemp)
+        grep -v "^${worktree_name}:" "$REGISTRY_FILE" > "$temp_file" 2>/dev/null || true
+        mv "$temp_file" "$REGISTRY_FILE"
+    fi
+}
+
+# Output port environment variables for a given offset
+get_ports() {
+    local offset="$1"
+
+    if [[ -z "$offset" ]]; then
+        error "Offset required"
+        exit 1
+    fi
+
+    if ! [[ "$offset" =~ ^[0-9]+$ ]]; then
+        error "Offset must be a number"
+        exit 1
+    fi
+
+    local dev_db=$((5432 + offset * 10))
+    local test_db=$((5433 + offset * 10))
+    local backend=$((8000 + offset * 10))
+    local frontend=$((3000 + offset * 10))
+
+    echo "DEV_DB_PORT=$dev_db"
+    echo "TEST_DB_PORT=$test_db"
+    echo "BACKEND_PORT=$backend"
+    echo "FRONTEND_PORT=$frontend"
+}
+
+# List all port allocations
+list_allocations() {
+    if [[ ! -f "$REGISTRY_FILE" ]] || [[ ! -s "$REGISTRY_FILE" ]]; then
+        echo "No port allocations found."
+        return 0
+    fi
+
+    echo "Current port allocations:"
+    echo ""
+    printf "  %-30s %-8s %-8s %-8s %-8s %-8s\n" "WORKTREE" "OFFSET" "DEV_DB" "TEST_DB" "BACKEND" "FRONTEND"
+    printf "  %-30s %-8s %-8s %-8s %-8s %-8s\n" "--------" "------" "------" "-------" "-------" "--------"
+
+    while IFS=: read -r name offset; do
+        [[ -z "$name" ]] && continue
+        local dev_db=$((5432 + offset * 10))
+        local test_db=$((5433 + offset * 10))
+        local backend=$((8000 + offset * 10))
+        local frontend=$((3000 + offset * 10))
+        printf "  %-30s %-8s %-8s %-8s %-8s %-8s\n" "$name" "$offset" "$dev_db" "$test_db" "$backend" "$frontend"
+    done < "$REGISTRY_FILE"
+}
+
+# Show usage
+usage() {
+    cat <<EOF
+Usage: worktree-ports <command> [arguments]
+
+Manage port allocations for parallel worktree development.
+
+Commands:
+  allocate <name>   Allocate a port offset for a worktree (returns offset number)
+  release <name>    Release a port offset when worktree is removed
+  ports <offset>    Output port environment variables for a given offset
+  list              Show all current port allocations
+
+Port allocation scheme:
+  Base ports (main repo): DB=5432, Test DB=5433, Backend=8000, Frontend=3000
+  Worktree ports = Base + (offset * 10)
+
+Examples:
+  worktree-ports allocate admin-dashboard   # Returns: 1
+  worktree-ports ports 1                    # Returns: DEV_DB_PORT=5442 ...
+  worktree-ports release admin-dashboard    # Frees the offset
+  worktree-ports list                       # Shows all allocations
+EOF
+}
+
+# Main entry point
+main() {
+    local command="${1:-}"
+    shift || true
+
+    case "$command" in
+        allocate)
+            allocate_offset "$@"
+            ;;
+        release)
+            release_offset "$@"
+            ;;
+        ports)
+            get_ports "$@"
+            ;;
+        list|ls)
+            list_allocations
+            ;;
+        help|--help|-h)
+            usage
+            ;;
+        "")
+            usage
+            ;;
+        *)
+            error "Unknown command: $command"
+            echo ""
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
