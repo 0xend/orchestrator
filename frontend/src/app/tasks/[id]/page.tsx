@@ -80,10 +80,11 @@ export default function TaskDetailPage() {
       <div className="app-shell">
         <Sidebar tasks={tasks} selectedTaskId={taskId} />
         <main className="main">
-          <div className="loading-state">
-            <span className="loading-dot" />
-            <span className="loading-dot" />
-            <span className="loading-dot" />
+          <div className="loading-state" role="status" aria-live="polite">
+            <span className="text-muted">Loading task...</span>
+            <span className="loading-dot" aria-hidden="true" />
+            <span className="loading-dot" aria-hidden="true" />
+            <span className="loading-dot" aria-hidden="true" />
           </div>
         </main>
       </div>

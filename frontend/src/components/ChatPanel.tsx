@@ -20,6 +20,18 @@ interface ChatPanelProps {
   onRequestReview: () => Promise<void>;
 }
 
+function normalizeMessageRole(
+  role: "user" | "assistant" | "tool_use" | "tool_result",
+): "user" | "assistant" | "tool" {
+  if (role === "user") {
+    return "user";
+  }
+  if (role === "assistant") {
+    return "assistant";
+  }
+  return "tool";
+}
+
 export function ChatPanel({
   task,
   streamLogs,
@@ -72,7 +84,7 @@ export function ChatPanel({
         {flattenedMessages.map((msg) => (
           <MessageBubble
             key={msg.id}
-            role={msg.role === "user" ? "user" : "assistant"}
+            role={normalizeMessageRole(msg.role)}
             text={msg.text}
           />
         ))}
