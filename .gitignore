@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+e2e/playwright-report/
+e2e/test-results/
+
+# Local env/runtime
+*.log
+backend/orchestrator.db
+backend/.env
+frontend/.env.local
+.worktree.env
+.worktree.startup.env
+
+# macOS
+.DS_Store

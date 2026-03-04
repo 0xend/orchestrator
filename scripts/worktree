@@ -1,0 +1,764 @@
+#!/bin/bash
+# shellcheck disable=SC2155
+
+# Worktree management for parallel Claude Code development
+# Creates git worktrees from Claude Code plan files
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_NAME="$(basename "$REPO_ROOT")"
+PARENT_DIR="$(dirname "$REPO_ROOT")"
+PLANS_DIR="$HOME/.claude/plans"
+
+# Track worktree path for cleanup on failure
+CLEANUP_WORKTREE_PATH=""
+
+# Cleanup handler for failed create operations
+cleanup_on_error() {
+    if [[ -n "$CLEANUP_WORKTREE_PATH" && -d "$CLEANUP_WORKTREE_PATH" ]]; then
+        warn "Cleaning up partial worktree: $CLEANUP_WORKTREE_PATH"
+        git worktree remove "$CLEANUP_WORKTREE_PATH" --force 2>/dev/null || true
+    fi
+}
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+error() { echo -e "${RED}Error:${NC} $1" >&2; }
+success() { echo -e "${GREEN}$1${NC}"; }
+warn() { echo -e "${YELLOW}Warning:${NC} $1"; }
+info() { echo -e "${BLUE}$1${NC}"; }
+
+usage() {
+    cat <<EOF
+Usage: worktree <command> [options] [arguments]
+
+Manage git worktrees for parallel Claude Code development.
+
+Commands:
+  create <plan> <branch>   Create worktree from a plan file
+  list                     List all ${REPO_NAME} worktrees
+  remove <name>            Remove a worktree by name
+  prune                    Remove all worktrees (with confirmation)
+
+Options for 'create':
+  -n, --no-setup        Skip dependency installation
+  --from BRANCH         Base branch (default: main)
+
+Examples:
+  worktree create dapper-purring-eich feature/admin-dashboard
+  worktree create cozy-mixing-lemur bugfix/wrong-seed
+  worktree create dapper-purring-eich feature/filters --no-setup
+  worktree remove feature/admin-dashboard
+
+Available plans in ~/.claude/plans/:
+EOF
+    list_plans 10
+}
+
+# List available plans with optional limit
+list_plans() {
+    local limit="${1:-0}"
+    local count=0
+    local total=0
+
+    # Count total plans
+    if [[ -d "$PLANS_DIR" ]]; then
+        total=$(find "$PLANS_DIR" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+    fi
+
+    if [[ "$total" -eq 0 ]]; then
+        echo "  (no plans found)"
+        return
+    fi
+
+    for plan_file in "$PLANS_DIR"/*.md; do
+        [[ -f "$plan_file" ]] || continue
+        local name
+        name=$(basename "$plan_file" .md)
+        echo "  $name"
+        ((count++))
+        if [[ "$limit" -gt 0 && "$count" -ge "$limit" ]]; then
+            local remaining=$((total - limit))
+            if [[ "$remaining" -gt 0 ]]; then
+                echo "  ... and $remaining more"
+            fi
+            break
+        fi
+    done
+}
+
+# Resolve plan file path from name or full path
+resolve_plan_file() {
+    local plan_input="$1"
+
+    if [[ -f "$plan_input" ]]; then
+        echo "$plan_input"
+    elif [[ -f "$PLANS_DIR/${plan_input}.md" ]]; then
+        echo "$PLANS_DIR/${plan_input}.md"
+    elif [[ -f "$PLANS_DIR/${plan_input}" ]]; then
+        echo "$PLANS_DIR/${plan_input}"
+    else
+        return 1
+    fi
+}
+
+# Derive worktree path from branch name
+derive_worktree_path() {
+    local branch_name="$1"
+    # Convert branch name to directory name (feature/admin-dashboard -> admin-dashboard)
+    local dir_name="${branch_name##*/}"
+    echo "$PARENT_DIR/${REPO_NAME}-${dir_name}"
+}
+
+# Validate branch name for safety
+validate_branch_name() {
+    local branch_name="$1"
+
+    # Check for valid characters only (alphanumeric, /, _, -)
+    if [[ ! "$branch_name" =~ ^[a-zA-Z0-9/_-]+$ ]]; then
+        error "Invalid branch name: $branch_name"
+        echo "Branch names may only contain: letters, numbers, /, _, and -"
+        return 1
+    fi
+
+    # Check for path traversal attempts
+    if [[ "$branch_name" == *".."* ]]; then
+        error "Invalid branch name: path traversal not allowed"
+        return 1
+    fi
+
+    # Check for leading/trailing slashes or dashes
+    if [[ "$branch_name" =~ ^[/-] || "$branch_name" =~ [/-]$ ]]; then
+        error "Invalid branch name: cannot start or end with / or -"
+        return 1
+    fi
+
+    return 0
+}
+
+# Setup port isolation for worktree
+setup_port_isolation() {
+    local worktree_path="$1"
+    local worktree_name="$2"
+
+    echo "  Allocating ports for worktree..."
+
+    # Allocate a port offset
+    local offset
+    offset=$("$SCRIPT_DIR/worktree-ports" allocate "$worktree_name")
+
+    if [[ -z "$offset" ]]; then
+        error "Failed to allocate port offset"
+        return 1
+    fi
+
+    # Calculate ports
+    local dev_db=$((5432 + offset * 10))
+    local test_db=$((5433 + offset * 10))
+    local backend=$((8000 + offset * 10))
+    local frontend=$((3000 + offset * 10))
+
+    echo "    Offset: $offset"
+    echo "    Ports: DB=$dev_db, Test DB=$test_db, Backend=$backend, Frontend=$frontend"
+
+    # Generate .worktree.env with generic per-worktree port data
+    cat > "$worktree_path/.worktree.env" <<EOF
+# Auto-generated worktree environment - DO NOT EDIT
+# Worktree: $worktree_name
+# Offset: $offset
+
+WORKTREE_NAME=$worktree_name
+WORKTREE_OFFSET=$offset
+DEV_DB_PORT=$dev_db
+TEST_DB_PORT=$test_db
+BACKEND_PORT=$backend
+FRONTEND_PORT=$frontend
+EOF
+
+    success "  Port isolation configured!"
+}
+
+# Read startup config from repos.yaml and expose a lightweight env snapshot
+generate_startup_environment() {
+    local worktree_path="$1"
+    local repos_file="$worktree_path/repos.yaml"
+    local output_file="$worktree_path/.worktree.startup.env"
+
+    if [[ ! -f "$repos_file" ]]; then
+        warn "repos.yaml not found in worktree; skipping startup snapshot generation"
+        return 0
+    fi
+
+    echo "  Reading startup config from repos.yaml..."
+    if ! python3 - "$repos_file" "$output_file" <<'PY'
+import ast
+import re
+import shlex
+import sys
+from pathlib import Path
+
+repos_file = Path(sys.argv[1])
+output_file = Path(sys.argv[2])
+
+
+def clean_scalar(value: str) -> str:
+    value = value.strip()
+    if value in {"null", "~"}:
+        return ""
+    if value.startswith('"') and value.endswith('"'):
+        return value[1:-1]
+    if value.startswith("'") and value.endswith("'"):
+        return value[1:-1]
+    return value
+
+
+repos: list[dict[str, str]] = []
+current: dict[str, str] | None = None
+in_startup = False
+in_preview = False
+
+for raw_line in repos_file.read_text(encoding="utf-8").splitlines():
+    stripped = raw_line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+
+    if stripped.startswith("- name:"):
+        if current:
+            repos.append(current)
+        current = {"name": clean_scalar(stripped.split(":", 1)[1])}
+        in_startup = False
+        in_preview = False
+        continue
+
+    if not current:
+        continue
+
+    if stripped.startswith("startup:"):
+        in_startup = True
+        in_preview = False
+        continue
+
+    if stripped.startswith("preview:"):
+        in_startup = False
+        in_preview = True
+        continue
+
+    if in_startup and stripped.startswith("command:"):
+        value = stripped.split(":", 1)[1].strip()
+        if value.startswith("["):
+            parsed = ast.literal_eval(value)
+            if isinstance(parsed, list):
+                current["command"] = " ".join(str(part) for part in parsed)
+            else:
+                current["command"] = clean_scalar(value)
+        else:
+            current["command"] = clean_scalar(value)
+        continue
+
+    if in_preview and stripped.startswith("url:"):
+        current["preview_url"] = clean_scalar(stripped.split(":", 1)[1])
+        continue
+
+if current:
+    repos.append(current)
+
+lines = [
+    "# Auto-generated startup snapshot from repos.yaml",
+    "# Values are shell-quoted for safe sourcing.",
+]
+for repo in repos:
+    name = repo.get("name", "").strip()
+    if not name:
+        continue
+    key = re.sub(r"[^A-Z0-9]+", "_", name.upper()).strip("_")
+    lines.append(f"REPO_{key}_STARTUP_COMMAND={shlex.quote(repo.get('command', ''))}")
+    lines.append(f"REPO_{key}_PREVIEW_URL={shlex.quote(repo.get('preview_url', ''))}")
+
+output_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+    then
+        warn "Could not parse repos.yaml startup config"
+        return 0
+    fi
+
+    success "  Startup snapshot generated: .worktree.startup.env"
+}
+
+# Setup environment in worktree
+setup_worktree_environment() {
+    local worktree_path="$1"
+    local worktree_name="$2"
+
+    echo "Setting up development environment..."
+
+    # Setup port isolation first
+    setup_port_isolation "$worktree_path" "$worktree_name"
+    generate_startup_environment "$worktree_path"
+
+    # Create backend virtual environment and install dependencies
+    if [[ -f "$worktree_path/backend/pyproject.toml" ]]; then
+        echo "  Installing backend dependencies..."
+        (
+            cd "$worktree_path/backend"
+            # Use uv if available, fall back to python3
+            if command -v uv &> /dev/null; then
+                uv venv .venv
+                uv pip install -e ".[dev]"
+            else
+                python3 -m venv .venv
+                .venv/bin/pip install -q -e ".[dev]"
+            fi
+        ) || warn "Backend setup failed - run manually: cd backend && uv venv .venv && uv pip install -e '.[dev]'"
+    fi
+
+    # Install frontend dependencies
+    if [[ -f "$worktree_path/frontend/package.json" ]]; then
+        echo "  Installing frontend dependencies..."
+        (
+            cd "$worktree_path/frontend"
+            npm install --silent
+        ) || warn "Frontend setup failed - run manually: cd frontend && npm install"
+    fi
+
+    # Setup git hooks
+    if [[ -f "$worktree_path/scripts/setup-hooks.sh" ]]; then
+        echo "  Setting up git hooks..."
+        (
+            cd "$worktree_path"
+            ./scripts/setup-hooks.sh
+        ) || warn "Hook setup failed - run manually: ./scripts/setup-hooks.sh"
+    fi
+
+    success "  Environment setup complete!"
+}
+
+# Create subcommand
+cmd_create() {
+    local plan_input=""
+    local branch_name=""
+    local skip_setup=false
+    local base_branch="main"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -n|--no-setup)
+                skip_setup=true
+                shift
+                ;;
+            --from)
+                base_branch="$2"
+                shift 2
+                ;;
+            -*)
+                error "Unknown option: $1"
+                exit 1
+                ;;
+            *)
+                if [[ -z "$plan_input" ]]; then
+                    plan_input="$1"
+                elif [[ -z "$branch_name" ]]; then
+                    branch_name="$1"
+                else
+                    error "Unexpected argument: $1"
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$plan_input" ]]; then
+        error "Plan name or path required"
+        echo ""
+        usage
+        exit 1
+    fi
+
+    if [[ -z "$branch_name" ]]; then
+        error "Branch name required (e.g., feature/admin-dashboard, bugfix/wrong-seed)"
+        echo ""
+        usage
+        exit 1
+    fi
+
+    # Validate branch name
+    validate_branch_name "$branch_name" || exit 1
+
+    # Resolve plan file
+    local plan_file
+    plan_file=$(resolve_plan_file "$plan_input") || {
+        error "Plan file not found: $plan_input"
+        echo ""
+        echo "Available plans in ~/.claude/plans/:"
+        list_plans 10
+        exit 1
+    }
+
+    # Derive names
+    local plan_name
+    plan_name=$(basename "$plan_file" .md)
+    local worktree_path
+    worktree_path=$(derive_worktree_path "$branch_name")
+
+    info "Creating worktree for plan: $plan_name"
+    echo "  Branch: $branch_name"
+    echo "  Directory: $worktree_path"
+    echo "  Base: $base_branch"
+    echo ""
+
+    # Check for conflicts
+    if [[ -d "$worktree_path" ]]; then
+        error "Worktree directory already exists: $worktree_path"
+        echo "Run 'worktree remove ${branch_name##*/}' first, or choose a different branch name"
+        exit 1
+    fi
+
+    # Set up cleanup trap for this operation
+    CLEANUP_WORKTREE_PATH="$worktree_path"
+    trap cleanup_on_error ERR
+
+    # Create worktree - handle existing branch atomically
+    if git show-ref --verify --quiet "refs/heads/${branch_name}"; then
+        warn "Branch already exists: $branch_name"
+        read -p "Use existing branch? [y/N] " confirm
+        if [[ "$confirm" == [yY] ]]; then
+            git worktree add "$worktree_path" "$branch_name"
+        else
+            echo "Aborted. Choose a different branch name."
+            CLEANUP_WORKTREE_PATH=""
+            exit 1
+        fi
+    else
+        # Create worktree with new branch
+        # Use -B to handle race condition where branch is created between check and add
+        if ! git worktree add -b "$branch_name" "$worktree_path" "$base_branch" 2>/dev/null; then
+            # Branch may have been created by another process, try again with existing branch
+            if git show-ref --verify --quiet "refs/heads/${branch_name}"; then
+                warn "Branch was created concurrently, using existing branch"
+                git worktree add "$worktree_path" "$branch_name"
+            else
+                error "Failed to create worktree"
+                CLEANUP_WORKTREE_PATH=""
+                exit 1
+            fi
+        fi
+    fi
+
+    # Copy plan file into worktree
+    mkdir -p "$worktree_path/.claude/plans"
+    cp "$plan_file" "$worktree_path/.claude/plans/"
+
+    # Copy .claude/settings.local.json if exists
+    if [[ -f "$REPO_ROOT/.claude/settings.local.json" ]]; then
+        mkdir -p "$worktree_path/.claude"
+        cp "$REPO_ROOT/.claude/settings.local.json" "$worktree_path/.claude/"
+    fi
+
+    # Derive worktree name for port allocation (feature/foo -> foo)
+    local worktree_name="${branch_name##*/}"
+
+    # Setup environment
+    if [[ "$skip_setup" != true ]]; then
+        setup_worktree_environment "$worktree_path" "$worktree_name"
+    else
+        warn "Skipping environment setup (install dependencies manually in the new worktree)"
+    fi
+
+    # Clear cleanup trap on success
+    CLEANUP_WORKTREE_PATH=""
+    trap - ERR
+
+    echo ""
+    success "Worktree created successfully!"
+    echo ""
+    echo "To start working:"
+    echo "  cd $worktree_path"
+    echo "  source .worktree.env                  # Optional: load allocated ports"
+    echo "  source .worktree.startup.env          # Optional: load startup snapshot"
+    echo "  claude     # Start Claude Code session"
+}
+
+# List subcommand
+cmd_list() {
+    echo "Active ${REPO_NAME} worktrees:"
+    echo ""
+
+    local found=false
+    local current_path=""
+    local current_branch=""
+
+    # Parse porcelain output which handles paths with spaces correctly
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*)
+                # Save previous worktree if we have one
+                if [[ -n "$current_path" ]]; then
+                    print_worktree_info "$current_path" "$current_branch"
+                    found=true
+                fi
+                # Start new worktree - path is everything after "worktree "
+                current_path="${line#worktree }"
+                current_branch=""
+                ;;
+            "branch refs/heads/"*)
+                current_branch="${line#branch refs/heads/}"
+                ;;
+            "HEAD "*)
+                # Detached HEAD - no branch
+                [[ -z "$current_branch" ]] && current_branch="(detached)"
+                ;;
+            "")
+                # Empty line marks end of worktree entry
+                ;;
+        esac
+    done < <(git worktree list --porcelain)
+
+    # Print last worktree
+    if [[ -n "$current_path" ]]; then
+        print_worktree_info "$current_path" "$current_branch"
+        found=true
+    fi
+
+    if [[ "$found" != true ]]; then
+        echo "  No worktrees found."
+    fi
+}
+
+# Helper to print worktree info
+print_worktree_info() {
+    local path="$1"
+    local branch="${2:-(detached)}"
+
+    # Check for plan file
+    local plan_name="none"
+    if [[ -d "$path/.claude/plans" ]]; then
+        local plan_file
+        plan_file=$(find "$path/.claude/plans" -maxdepth 1 -name "*.md" 2>/dev/null | head -1)
+        if [[ -n "$plan_file" ]]; then
+            plan_name=$(basename "$plan_file" .md)
+        fi
+    fi
+
+    # Mark main worktree
+    local marker=""
+    if [[ "$path" == "$REPO_ROOT" ]]; then
+        marker=" (main)"
+    fi
+
+    printf "  %-50s %-30s plan: %s%s\n" "$path" "[$branch]" "$plan_name" "$marker"
+}
+
+# Remove subcommand
+cmd_remove() {
+    local target="$1"
+    local force=false
+
+    if [[ -z "$target" ]]; then
+        error "Worktree name or path required"
+        echo "Usage: worktree remove <name-or-path>"
+        exit 1
+    fi
+
+    # Handle --force flag
+    if [[ "$target" == "--force" || "$target" == "-f" ]]; then
+        force=true
+        target="$2"
+    fi
+
+    # Resolve worktree path
+    local worktree_path
+    # Extract directory name from branch (feature/admin-dashboard -> admin-dashboard)
+    local dir_name="${target##*/}"
+
+    if [[ -d "$target" ]]; then
+        worktree_path="$target"
+    elif [[ -d "$PARENT_DIR/${REPO_NAME}-${dir_name}" ]]; then
+        worktree_path="$PARENT_DIR/${REPO_NAME}-${dir_name}"
+    elif [[ -d "$PARENT_DIR/${REPO_NAME}-${target}" ]]; then
+        worktree_path="$PARENT_DIR/${REPO_NAME}-${target}"
+    elif [[ -d "$PARENT_DIR/${target}" ]]; then
+        worktree_path="$PARENT_DIR/${target}"
+    else
+        error "Worktree not found: $target"
+        echo ""
+        echo "Available worktrees:"
+        cmd_list
+        exit 1
+    fi
+
+    # Don't allow removing main worktree
+    if [[ "$worktree_path" == "$REPO_ROOT" ]]; then
+        error "Cannot remove the main worktree!"
+        exit 1
+    fi
+
+    # Get branch name before removal
+    local branch_name
+    branch_name=$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+
+    # Check for uncommitted changes
+    if [[ -n $(git -C "$worktree_path" status --porcelain 2>/dev/null) ]]; then
+        warn "Worktree has uncommitted changes!"
+        if [[ "$force" != true ]]; then
+            read -p "Remove anyway? [y/N] " confirm
+            if [[ "$confirm" != [yY] ]]; then
+                echo "Aborted."
+                exit 1
+            fi
+        fi
+    fi
+
+    info "Removing worktree: $worktree_path"
+
+    # Release port allocation - normalize name by stripping repo prefix
+    # Port registry uses worktree name (e.g., "foo") not dir name (e.g., "${REPO_NAME}-foo")
+    local worktree_name
+    worktree_name=$(basename "$worktree_path" | sed "s/^${REPO_NAME}-//")
+    "$SCRIPT_DIR/worktree-ports" release "$worktree_name" 2>/dev/null || true
+
+    # Remove worktree
+    if [[ "$force" == true ]]; then
+        git worktree remove "$worktree_path" --force
+    else
+        git worktree remove "$worktree_path"
+    fi
+
+    # Optionally delete branch
+    if [[ -n "$branch_name" && "$branch_name" != "HEAD" ]]; then
+        read -p "Delete branch '$branch_name'? [y/N] " confirm
+        if [[ "$confirm" == [yY] ]]; then
+            git branch -D "$branch_name" 2>/dev/null || warn "Could not delete branch (may already be deleted)"
+        fi
+    fi
+
+    success "Worktree removed: $worktree_path"
+}
+
+# Prune subcommand
+cmd_prune() {
+    echo "Finding ${REPO_NAME} worktrees to remove..."
+    echo ""
+
+    local worktrees=()
+    local branches=()
+
+    # Parse worktree list to get paths and branches
+    local current_path=""
+    local current_branch=""
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*)
+                if [[ -n "$current_path" && "$current_path" == "$PARENT_DIR/${REPO_NAME}-"* ]]; then
+                    worktrees+=("$current_path")
+                    [[ -n "$current_branch" ]] && branches+=("$current_branch")
+                fi
+                current_path="${line#worktree }"
+                current_branch=""
+                ;;
+            "branch refs/heads/"*)
+                current_branch="${line#branch refs/heads/}"
+                ;;
+        esac
+    done < <(git worktree list --porcelain)
+
+    # Handle last entry
+    if [[ -n "$current_path" && "$current_path" == "$PARENT_DIR/${REPO_NAME}-"* ]]; then
+        worktrees+=("$current_path")
+        [[ -n "$current_branch" ]] && branches+=("$current_branch")
+    fi
+
+    if [[ ${#worktrees[@]} -eq 0 ]]; then
+        echo "No additional worktrees found (only main worktree exists)."
+        return
+    fi
+
+    echo "Found ${#worktrees[@]} worktree(s):"
+    for wt in "${worktrees[@]}"; do
+        echo "  $wt"
+    done
+    echo ""
+
+    read -p "Remove all worktrees? [y/N] " confirm
+    if [[ "$confirm" == [yY] ]]; then
+        for wt in "${worktrees[@]}"; do
+            echo "Removing: $wt"
+            # Release port allocation (extract worktree name from path)
+            local wt_name
+            wt_name=$(basename "$wt" | sed "s/^${REPO_NAME}-//")
+            "$SCRIPT_DIR/worktree-ports" release "$wt_name" 2>/dev/null || true
+            git worktree remove "$wt" --force 2>/dev/null || warn "Failed to remove $wt"
+        done
+
+        # Clean up orphaned worktree references
+        git worktree prune
+
+        success "All worktrees removed."
+
+        # Offer to delete branches
+        if [[ ${#branches[@]} -gt 0 ]]; then
+            echo ""
+            echo "Associated branches:"
+            for branch in "${branches[@]}"; do
+                echo "  $branch"
+            done
+            echo ""
+            read -p "Delete these branches too? [y/N] " confirm_branches
+            if [[ "$confirm_branches" == [yY] ]]; then
+                for branch in "${branches[@]}"; do
+                    git branch -D "$branch" 2>/dev/null && echo "Deleted branch: $branch" || warn "Could not delete branch: $branch"
+                done
+            fi
+        fi
+    else
+        echo "Aborted."
+    fi
+}
+
+# Main entry point
+main() {
+    # Check we're in a git repo
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        error "Not in a git repository"
+        exit 1
+    fi
+
+    local command="${1:-}"
+    shift || true
+
+    case "$command" in
+        create)
+            cmd_create "$@"
+            ;;
+        list|ls)
+            cmd_list "$@"
+            ;;
+        remove|rm)
+            cmd_remove "$@"
+            ;;
+        prune)
+            cmd_prune "$@"
+            ;;
+        help|--help|-h)
+            usage
+            ;;
+        "")
+            usage
+            ;;
+        *)
+            error "Unknown command: $command"
+            echo ""
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

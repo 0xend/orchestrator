@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# Pre-commit hook: run unit-level checks before commit.
+# To skip this hook, use: git commit --no-verify
+
+set -euo pipefail
+
+echo "Running pre-commit checks..."
+
+# Get the project root directory
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo ""
+echo "=== CI unit checks (includes ruff) ==="
+make ci-unit
+
+echo ""
+echo "✅ All pre-commit checks passed!"
