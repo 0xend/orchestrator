@@ -11,12 +11,19 @@ export function ToolCallDisplay({ tool, input }: ToolCallDisplayProps) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="panel" style={{ padding: 10 }}>
-      <button type="button" onClick={() => setOpen((value) => !value)}>
-        [{open ? "-" : "+"}] tool: {tool}
+    <div className="tool-call">
+      <button
+        type="button"
+        className="tool-call-header"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className={`tool-call-chevron ${open ? "open" : ""}`}>&#9654;</span>
+        {tool}
       </button>
       {open ? (
-        <pre style={{ marginTop: 8, overflowX: "auto" }}>{JSON.stringify(input, null, 2)}</pre>
+        <div className="tool-call-body">
+          <pre>{JSON.stringify(input, null, 2)}</pre>
+        </div>
       ) : null}
     </div>
   );

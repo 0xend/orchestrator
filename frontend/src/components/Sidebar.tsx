@@ -10,19 +10,25 @@ interface SidebarProps {
 export function Sidebar({ tasks, selectedTaskId }: SidebarProps) {
   return (
     <aside className="sidebar">
-      <h2 style={{ marginTop: 0 }}>Orchestrator</h2>
-      <p style={{ color: "var(--muted)", marginTop: 0 }}>Tasks</p>
+      <div className="sidebar-brand">
+        <h2>Orchestrator</h2>
+      </div>
+      <div className="section-label">Tasks</div>
       {tasks.map((task) => (
         <Link
           key={task.id}
           href={`/tasks/${task.id}`}
           className={`task-link ${selectedTaskId === task.id ? "active" : ""}`}
         >
-          <div style={{ fontWeight: 600 }}>{task.title}</div>
-          <div style={{ color: "var(--muted)", fontSize: 13 }}>{task.status}</div>
+          <div className="task-link-title">{task.title}</div>
+          <div className="task-link-meta">
+            <span className="status-badge" data-status={task.status}>
+              {task.status.replace("_", " ")}
+            </span>
+          </div>
         </Link>
       ))}
-      {tasks.length === 0 ? <div style={{ color: "var(--muted)" }}>No tasks yet.</div> : null}
+      {tasks.length === 0 ? <div className="empty-state">No tasks yet.</div> : null}
     </aside>
   );
 }
