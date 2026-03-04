@@ -109,7 +109,7 @@ backend-test: ## Run backend tests
 	@cd backend && .venv/bin/pytest -q
 
 backend-lint: ## Run backend lint checks
-	@cd backend && .venv/bin/ruff check
+	@cd backend && .venv/bin/ruff check app tests
 
 backend-check: backend-lint backend-test ## Run backend lint and tests
 
