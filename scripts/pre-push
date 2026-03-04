@@ -1,26 +1,33 @@
 #!/bin/bash
 
-# Pre-push hook: Lightweight check before pushing
-# Full tests (including E2E) run on pre-commit to catch issues early
+# Pre-push hook: run the same checks executed in CI before pushing.
 # To skip this hook, use: git push --no-verify
 
-echo "Running pre-push checks..."
+set -euo pipefail
 
-# Get the project root directory
+echo "Running pre-push CI checks..."
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-# Quick sanity check - just verify lint passes
-# Full tests already ran on pre-commit
-echo ""
-echo "=== Quick lint verification ==="
-make lint
-if [ $? -ne 0 ]; then
+cleanup() {
     echo ""
-    echo "❌ Lint checks failed. Fix the issues before pushing."
-    exit 1
-fi
+    echo "=== Cleaning E2E containers ==="
+    make e2e-down >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 echo ""
-echo "✅ Pre-push checks passed! Proceeding with push..."
-exit 0
+echo "=== CI unit checks ==="
+make ci-unit
+
+echo ""
+echo "=== Preparing E2E dependencies ==="
+make e2e-prepare-ci
+
+echo ""
+echo "=== CI end-to-end checks ==="
+make ci-e2e
+
+echo ""
+echo "✅ Pre-push CI checks passed. Proceeding with push..."

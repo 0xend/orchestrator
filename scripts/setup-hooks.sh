@@ -3,6 +3,8 @@
 # Setup git hooks for the project
 # Run this after cloning the repository
 
+set -euo pipefail
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HOOKS_DIR="$(git rev-parse --git-dir)/hooks"
 SCRIPTS_DIR="$REPO_ROOT/scripts"
@@ -21,7 +23,7 @@ chmod +x "$HOOKS_DIR/pre-push"
 echo "✅ Git hooks installed successfully!"
 echo ""
 echo "The following hooks are now active:"
-echo "  - pre-commit: Runs lint, unit tests, and E2E tests before committing"
-echo "  - pre-push: Quick lint verification before pushing"
+echo "  - pre-commit: Runs local commit-time checks before committing"
+echo "  - pre-push: Runs CI-equivalent checks (unit + E2E) before pushing"
 echo ""
 echo "To skip hooks temporarily, use: git commit --no-verify or git push --no-verify"
