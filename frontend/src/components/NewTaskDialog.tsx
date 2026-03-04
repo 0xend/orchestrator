@@ -1,48 +1,29 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-
-import { RepoConfig } from "@/lib/types";
+import { FormEvent, useState } from "react";
 
 interface NewTaskDialogProps {
-  repos: RepoConfig[];
-  onCreate: (input: { title: string; description: string; repo_name: string }) => Promise<void>;
+  onCreate: (input: { title: string; description: string; github_url: string }) => Promise<void>;
 }
 
-export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
+export function NewTaskDialog({ onCreate }: NewTaskDialogProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [repoName, setRepoName] = useState(repos[0]?.name ?? "");
+  const [githubUrl, setGithubUrl] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const repoNamesKey = repos.map((r) => r.name).join("\0");
-
-  useEffect(() => {
-    if (repos.length === 0) {
-      setRepoName("");
-      return;
-    }
-
-    setRepoName((current) => {
-      if (current && repos.some((repo) => repo.name === current)) {
-        return current;
-      }
-      return repos[0].name;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [repoNamesKey]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!title || !description || !repoName) {
+    if (!title || !description || !githubUrl) {
       return;
     }
 
     setBusy(true);
     try {
-      await onCreate({ title, description, repo_name: repoName });
+      await onCreate({ title, description, github_url: githubUrl });
       setTitle("");
       setDescription("");
+      setGithubUrl("");
     } finally {
       setBusy(false);
     }
@@ -51,13 +32,13 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
   return (
     <form className="panel stack" onSubmit={submit}>
       <h3 style={{ margin: 0 }}>New Task</h3>
-      <select value={repoName} onChange={(event) => setRepoName(event.target.value)}>
-        {repos.map((repo) => (
-          <option key={repo.name} value={repo.name}>
-            {repo.name}
-          </option>
-        ))}
-      </select>
+      <input
+        value={githubUrl}
+        onChange={(event) => setGithubUrl(event.target.value)}
+        placeholder="https://github.com/owner/repo"
+        type="url"
+        required
+      />
       <input
         value={title}
         onChange={(event) => setTitle(event.target.value)}
@@ -71,7 +52,7 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
         rows={4}
         required
       />
-      <button className="primary" type="submit" disabled={busy || repos.length === 0}>
+      <button className="primary" type="submit" disabled={busy}>
         {busy ? "Creating..." : "Create Task"}
       </button>
     </form>

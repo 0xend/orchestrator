@@ -70,6 +70,8 @@ class Task(Base, TimestampMixin):
         index=True,
     )
     repo_name: Mapped[str] = mapped_column(String(128), index=True)
+    github_url: Mapped[str] = mapped_column(String(512), nullable=False, server_default="")
+    container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     worktree_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     preview_url: Mapped[str | None] = mapped_column(Text, nullable=True)

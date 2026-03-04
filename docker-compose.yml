@@ -33,12 +33,16 @@ services:
       GIT_AUTHOR_NAME: Orchestrator Bot
       GIT_AUTHOR_EMAIL: orchestrator-bot@example.com
       GH_CLI_BIN: gh
+      WORKER_IMAGE: ${WORKER_IMAGE:-orchestrator-worker:latest}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-orchestrator_default}
+      GH_TOKEN: ${GH_TOKEN:-}
       ORCHESTRATOR_BACKEND_PORT: ${ORCHESTRATOR_BACKEND_PORT:-18000}
       ORCHESTRATOR_FRONTEND_PORT: ${ORCHESTRATOR_FRONTEND_PORT:-13000}
     ports:
       - "${ORCHESTRATOR_BACKEND_PORT:-18000}:8000"
     volumes:
       - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
 
   frontend:
     build:

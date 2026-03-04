@@ -41,6 +41,25 @@ class ReposConfig(BaseModel):
     repos: list[RepoConfig] = Field(default_factory=list)
 
 
+class TaskStartupConfig(BaseModel):
+    command: list[str] | None = None
+    cwd: str = "."
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout: int = 180
+
+
+class TaskPreviewConfig(BaseModel):
+    strategy: Literal["none", "fixed_url", "stdout_regex", "healthcheck"] = "none"
+    url: str | None = None
+    stdout_regex: str | None = None
+    healthcheck_url: str | None = None
+
+
+class TaskPRConfig(BaseModel):
+    base_branch: str = "main"
+    draft: bool = True
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -53,6 +72,11 @@ class Settings(BaseSettings):
     git_author_name: str = "Orchestrator Bot"
     git_author_email: str = "orchestrator-bot@example.com"
     gh_cli_bin: str = "gh"
+
+    worker_image: str = "orchestrator-worker:latest"
+    docker_network: str = "orchestrator_default"
+    container_workspace: str = "/workspace"
+    gh_token: str = ""
 
 
 def _default_repos_config_path() -> Path:

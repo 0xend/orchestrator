@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 
-from app.config import RepoConfig
+from app.config import RepoConfig, TaskStartupConfig, TaskPreviewConfig
 from app.security.path_guard import resolve_worktree_path
+
+if TYPE_CHECKING:
+    from app.services.container_manager import ContainerManager
+
+logger = logging.getLogger(__name__)
 
 
 class ProcessStartupError(RuntimeError):
@@ -61,6 +68,38 @@ class ProcessManager:
         except Exception:
             await self.stop(task_id)
             raise
+
+    async def start_in_container(
+        self,
+        task_id: str,
+        container_id: str,
+        container_manager: ContainerManager,
+        workspace: str,
+        startup: TaskStartupConfig | None = None,
+        preview: TaskPreviewConfig | None = None,
+    ) -> str | None:
+        if startup is None or startup.command is None:
+            return None
+
+        from app.services.container_manager import ContainerError
+
+        cwd = f"{workspace}/{startup.cwd}" if startup.cwd != "." else workspace
+        cmd = startup.command
+
+        try:
+            container_manager.exec_in_container(
+                container_id,
+                ["sh", "-c", " ".join(cmd) + " &"],
+                workdir=cwd,
+                timeout=startup.timeout,
+            )
+        except ContainerError as exc:
+            raise ProcessStartupError(f"Failed to start process in container: {exc}") from exc
+
+        if preview and preview.strategy == "fixed_url" and preview.url:
+            return preview.url
+
+        return None
 
     async def stop(self, task_id: str, *, timeout_seconds: int = 10) -> None:
         managed = self._processes.pop(task_id, None)

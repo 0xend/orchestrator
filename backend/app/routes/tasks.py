@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -14,7 +15,7 @@ from app.agents.prompts import (
     PLANNER_PROMPT,
     PLAN_REVIEWER_PROMPT,
 )
-from app.config import get_repo_config
+from app.config import TaskPRConfig, TaskPreviewConfig, TaskStartupConfig, get_settings
 from app.db.database import get_db
 from app.db.models import (
     AgentRole,
@@ -27,21 +28,35 @@ from app.db.models import (
     TaskStatus,
 )
 from app.security.auth import AuthenticatedUser, get_current_user
+from app.services.container_manager import ContainerError, ContainerManager
 from app.services.event_bus import event_bus
-from app.services.process_manager import ProcessStartupError, process_manager
+from app.services.process_manager import process_manager
 from app.services.pr_creator import PRCreationError, PRCreator
 from app.services.task_state import apply_transition
-from app.services.worktree import WorktreeError, WorktreeManager
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-worktree_manager = WorktreeManager()
+container_manager = ContainerManager()
 pr_creator = PRCreator()
+
+_GITHUB_URL_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+
+
+def _parse_github_url(url: str) -> tuple[str, str]:
+    m = _GITHUB_URL_RE.match(url)
+    if not m:
+        raise ValueError(f"Invalid GitHub URL: {url}")
+    return m.group("owner"), m.group("repo")
 
 
 class CreateTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
-    repo_name: str = Field(min_length=1, max_length=128)
+    github_url: str = Field(min_length=1, max_length=512)
+    startup: TaskStartupConfig | None = None
+    preview: TaskPreviewConfig | None = None
+    pr: TaskPRConfig | None = None
 
 
 class SendMessageRequest(BaseModel):
@@ -56,6 +71,7 @@ def _task_payload(task: Task) -> dict:
         "description": task.description,
         "status": task.status.value,
         "repo_name": task.repo_name,
+        "github_url": task.github_url,
         "worktree_path": task.worktree_path,
         "branch_name": task.branch_name,
         "preview_url": task.preview_url,
@@ -150,13 +166,15 @@ async def create_task(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     try:
-        get_repo_config(payload.repo_name)
-    except KeyError as exc:
+        owner, repo_short = _parse_github_url(payload.github_url)
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    repo_name = f"{owner}/{repo_short}"
 
     generated_plan = (
         f"## Initial Plan\n\n"
-        f"1. Explore repository `{payload.repo_name}` for relevant modules.\n"
+        f"1. Explore repository `{repo_name}` for relevant modules.\n"
         f"2. Implement requested changes for: {payload.title}.\n"
         "3. Run verification and prepare review notes.\n"
     )
@@ -165,7 +183,8 @@ async def create_task(
         owner_user_id=current_user.id,
         title=payload.title,
         description=payload.description,
-        repo_name=payload.repo_name,
+        repo_name=repo_name,
+        github_url=payload.github_url,
         status=TaskStatus.PLANNING,
         plan_markdown=generated_plan,
     )
@@ -304,16 +323,26 @@ async def approve_plan(
     )
     db.add(implementer_session)
 
-    repo = get_repo_config(task.repo_name)
+    settings = get_settings()
 
     try:
-        if not task.worktree_path:
-            info = worktree_manager.create_worktree(str(repo.path), task.id)
-            task.worktree_path = info.worktree_path
+        if not task.container_id:
+            info = container_manager.create_task_container(
+                task.id,
+                task.github_url,
+                github_token=settings.gh_token or None,
+            )
+            task.container_id = info.container_id
+            task.worktree_path = info.workspace_path
             task.branch_name = info.branch_name
 
-        task.preview_url = await process_manager.start(task.id, repo, task.worktree_path)
-    except (WorktreeError, ProcessStartupError) as exc:
+        task.preview_url = await process_manager.start_in_container(
+            task.id,
+            task.container_id,
+            container_manager,
+            task.worktree_path,
+        )
+    except (ContainerError, Exception) as exc:
         task.status = TaskStatus.FAILED
         task.last_error = str(exc)
         task.version = (task.version or 0) + 1
@@ -365,12 +394,13 @@ async def request_review(
     if existing:
         return existing.response_json
 
-    repo = get_repo_config(task.repo_name)
     if not task.worktree_path:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Task has no worktree; approve-plan must run first",
         )
+
+    pr_config = TaskPRConfig()
 
     apply_transition(task, TaskStatus.CODE_REVIEW)
     review_session = AgentSession(
@@ -385,7 +415,7 @@ async def request_review(
         pr_result = pr_creator.create_or_update_pr(
             worktree_path=task.worktree_path,
             branch_name=task.branch_name,
-            base_branch=repo.pr.base_branch,
+            base_branch=pr_config.base_branch,
             title=f"{task.title} ({task.id[:8]})",
             body=(
                 "Automated PR created by Orchestrator.\n\n"
@@ -393,7 +423,9 @@ async def request_review(
                 f"- Repo: `{task.repo_name}`\n"
                 f"- Description: {task.description}\n"
             ),
-            draft=repo.pr.draft,
+            draft=pr_config.draft,
+            container_id=task.container_id,
+            container_manager=container_manager if task.container_id else None,
         )
     except PRCreationError as exc:
         task.last_error = str(exc)
@@ -422,6 +454,10 @@ async def request_review(
     )
     await db.commit()
 
+    # Destroy container after PR creation
+    if task.container_id:
+        container_manager.destroy_container(task.container_id)
+
     await process_manager.stop(task.id)
 
     await event_bus.publish(task.id, "review_done", {"pr_url": task.pr_url})
@@ -445,12 +481,10 @@ async def cancel_task(
     }:
         apply_transition(task, TaskStatus.CANCELED)
 
-    if task.worktree_path:
-        await process_manager.stop(task.id)
-        try:
-            worktree_manager.remove_worktree(task.worktree_path)
-        except WorktreeError as exc:
-            task.last_error = str(exc)
+    if task.container_id:
+        container_manager.destroy_container(task.container_id)
+
+    await process_manager.stop(task.id)
 
     await db.commit()
     await event_bus.publish(task.id, "status_change", {"status": task.status.value})

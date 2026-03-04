@@ -5,8 +5,12 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.config import get_settings
+
+if TYPE_CHECKING:
+    from app.services.container_manager import ContainerManager
 
 
 class PRCreationError(RuntimeError):
@@ -22,6 +26,147 @@ class PRCreationResult:
 
 class PRCreator:
     def create_or_update_pr(
+        self,
+        *,
+        worktree_path: str,
+        branch_name: str | None,
+        base_branch: str,
+        title: str,
+        body: str,
+        draft: bool,
+        container_id: str | None = None,
+        container_manager: ContainerManager | None = None,
+    ) -> PRCreationResult:
+        if container_id and container_manager:
+            return self._create_pr_in_container(
+                container_id=container_id,
+                container_manager=container_manager,
+                workspace=worktree_path,
+                branch_name=branch_name,
+                base_branch=base_branch,
+                title=title,
+                body=body,
+                draft=draft,
+            )
+        return self._create_pr_locally(
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            base_branch=base_branch,
+            title=title,
+            body=body,
+            draft=draft,
+        )
+
+    def _create_pr_in_container(
+        self,
+        *,
+        container_id: str,
+        container_manager: ContainerManager,
+        workspace: str,
+        branch_name: str | None,
+        base_branch: str,
+        title: str,
+        body: str,
+        draft: bool,
+    ) -> PRCreationResult:
+        from app.services.container_manager import ContainerError
+
+        settings = get_settings()
+
+        # Resolve branch name
+        if not branch_name:
+            result = container_manager.exec_in_container(
+                container_id,
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                workdir=workspace,
+            )
+            branch_name = result.stdout.strip()
+            if not branch_name:
+                raise PRCreationError("Current branch is empty")
+
+        # Stage and commit
+        container_manager.exec_in_container(
+            container_id, ["git", "add", "-A"], workdir=workspace
+        )
+
+        status_result = container_manager.exec_in_container(
+            container_id, ["git", "status", "--porcelain"], workdir=workspace
+        )
+        commit_sha = None
+        if status_result.stdout.strip():
+            try:
+                container_manager.exec_in_container(
+                    container_id,
+                    [
+                        "git", "commit", "-m",
+                        f"chore(orchestrator): complete task for {title}",
+                    ],
+                    workdir=workspace,
+                )
+                sha_result = container_manager.exec_in_container(
+                    container_id,
+                    ["git", "rev-parse", "HEAD"],
+                    workdir=workspace,
+                )
+                commit_sha = sha_result.stdout.strip() or None
+            except ContainerError:
+                pass
+
+        # Push
+        try:
+            container_manager.exec_in_container(
+                container_id,
+                ["git", "push", "-u", "origin", branch_name],
+                workdir=workspace,
+                timeout=120,
+            )
+        except ContainerError as exc:
+            raise PRCreationError(f"Failed to push branch: {exc}") from exc
+
+        # Check for existing PR
+        try:
+            view_result = container_manager.exec_in_container(
+                container_id,
+                [settings.gh_cli_bin, "pr", "view", branch_name, "--json", "url", "--jq", ".url"],
+                workdir=workspace,
+            )
+            if view_result.exit_code == 0 and view_result.stdout.strip():
+                return PRCreationResult(
+                    pr_url=view_result.stdout.strip(),
+                    branch_name=branch_name,
+                    commit_sha=commit_sha,
+                )
+        except ContainerError:
+            pass
+
+        # Create PR
+        cmd = [
+            settings.gh_cli_bin, "pr", "create",
+            "--base", base_branch,
+            "--head", branch_name,
+            "--title", title,
+            "--body", body,
+        ]
+        if draft:
+            cmd.append("--draft")
+
+        try:
+            create_result = container_manager.exec_in_container(
+                container_id, cmd, workdir=workspace, timeout=60
+            )
+        except ContainerError as exc:
+            raise PRCreationError(f"Failed to create pull request: {exc}") from exc
+
+        pr_url = (
+            self._extract_pr_url(create_result.stdout)
+            or self._extract_pr_url(create_result.stderr)
+        )
+        if not pr_url:
+            raise PRCreationError("PR created but URL was not found in gh output")
+
+        return PRCreationResult(pr_url=pr_url, branch_name=branch_name, commit_sha=commit_sha)
+
+    def _create_pr_locally(
         self,
         *,
         worktree_path: str,

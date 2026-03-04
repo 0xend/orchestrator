@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,11 +10,32 @@ from app.config import get_settings
 from app.db.database import init_db
 from app.routes import repos, stream, tasks
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_db()
+
+    # Clean up orphaned containers from previous runs
+    try:
+        from app.services.container_manager import ContainerManager
+
+        cm = ContainerManager()
+        cm.cleanup_orphaned_containers()
+    except Exception as exc:
+        logger.warning("Container cleanup on startup failed: %s", exc)
+
     yield
+
+    # Gracefully stop all active task containers on shutdown
+    try:
+        from app.services.container_manager import ContainerManager
+
+        cm = ContainerManager()
+        cm.cleanup_orphaned_containers()
+    except Exception as exc:
+        logger.warning("Container cleanup on shutdown failed: %s", exc)
 
 
 settings = get_settings()

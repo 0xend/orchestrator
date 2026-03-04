@@ -1,4 +1,4 @@
-import { RepoConfig, TaskDetail, TaskSummary } from "@/lib/types";
+import { TaskDetail, TaskSummary } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const AUTH_TOKEN = process.env.NEXT_PUBLIC_DEV_BEARER_TOKEN ?? "orchestrator-dev-token";
@@ -25,10 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  listRepos: () => request<RepoConfig[]>("/api/repos"),
   listTasks: () => request<TaskSummary[]>("/api/tasks"),
   getTask: (taskId: string) => request<TaskDetail>(`/api/tasks/${taskId}`),
-  createTask: (input: { title: string; description: string; repo_name: string }) =>
+  createTask: (input: { title: string; description: string; github_url: string }) =>
     request<TaskSummary>("/api/tasks", {
       method: "POST",
       body: JSON.stringify(input),

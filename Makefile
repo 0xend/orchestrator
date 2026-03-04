@@ -10,7 +10,7 @@ HEALTHCHECK_INTERVAL ?= 2
 
 .PHONY: \
 	help \
-	up down restart build ps ports-info logs logs-backend logs-frontend logs-db \
+	up down restart build build-worker ps ports-info logs logs-backend logs-frontend logs-db \
 	shell-backend shell-frontend shell-db gh-login \
 	backend-install backend-test backend-lint backend-check backend-migrate backend-migrate-head \
 	frontend-install frontend-lint frontend-build frontend-check \
@@ -26,6 +26,7 @@ help: ## Show available commands
 	@echo "  make down                  Stop and remove containers"
 	@echo "  make restart               Restart containers"
 	@echo "  make build                 Build images"
+	@echo "  make build-worker          Build task worker Docker image"
 	@echo "  make ps                    Show compose service status"
 	@echo "  make ports-info            Show service URLs"
 	@echo "  make logs                  Follow all service logs"
@@ -75,6 +76,9 @@ restart: ## Restart compose services
 
 build: ## Build compose images
 	@$(DOCKER_COMPOSE) build
+
+build-worker: ## Build the task worker Docker image
+	@docker build -t orchestrator-worker:latest worker/
 
 ps: ## Show service status
 	@$(DOCKER_COMPOSE) ps

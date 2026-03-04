@@ -1,0 +1,210 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from python_on_whales import DockerClient, exceptions as docker_exceptions
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class ContainerError(RuntimeError):
+    """Raised when container operations fail."""
+
+
+@dataclass(slots=True)
+class ContainerInfo:
+    container_id: str
+    branch_name: str
+    workspace_path: str
+
+
+@dataclass(slots=True)
+class ExecResult:
+    exit_code: int
+    stdout: str
+    stderr: str
+
+
+class ContainerManager:
+    def __init__(self) -> None:
+        self._docker = DockerClient()
+
+    def create_task_container(
+        self,
+        task_id: str,
+        github_url: str,
+        *,
+        base_branch: str = "main",
+        github_token: str | None = None,
+    ) -> ContainerInfo:
+        settings = get_settings()
+        container_name = f"orchestrator-task-{task_id[:12]}"
+        workspace = settings.container_workspace
+        branch_name = f"task/{task_id}"
+
+        # Idempotent: if container already exists, return its info
+        try:
+            existing = self._docker.container.inspect(container_name)
+            return ContainerInfo(
+                container_id=existing.id,
+                branch_name=branch_name,
+                workspace_path=workspace,
+            )
+        except docker_exceptions.NoSuchContainer:
+            pass
+
+        env_vars: dict[str, str] = {
+            "GIT_AUTHOR_NAME": settings.git_author_name,
+            "GIT_AUTHOR_EMAIL": settings.git_author_email,
+            "GIT_COMMITTER_NAME": settings.git_author_name,
+            "GIT_COMMITTER_EMAIL": settings.git_author_email,
+        }
+        if github_token:
+            env_vars["GH_TOKEN"] = github_token
+
+        try:
+            container = self._docker.run(
+                settings.worker_image,
+                name=container_name,
+                detach=True,
+                envs=env_vars,
+                networks=[settings.docker_network],
+            )
+        except Exception as exc:
+            raise ContainerError(f"Failed to create container: {exc}") from exc
+
+        container_id = container.id if hasattr(container, "id") else str(container)
+
+        # Clone the repo
+        clone_url = github_url
+        if github_token and clone_url.startswith("https://"):
+            clone_url = clone_url.replace("https://", f"https://x-access-token:{github_token}@")
+
+        try:
+            self._exec(
+                container_id,
+                ["git", "clone", "--branch", base_branch, clone_url, workspace],
+            )
+        except ContainerError:
+            # Retry without --branch for repos where base_branch doesn't exist
+            self._exec(container_id, ["git", "clone", clone_url, workspace])
+
+        # Create task branch
+        self._exec(
+            container_id,
+            ["git", "checkout", "-b", branch_name],
+            workdir=workspace,
+        )
+
+        return ContainerInfo(
+            container_id=container_id,
+            branch_name=branch_name,
+            workspace_path=workspace,
+        )
+
+    def exec_in_container(
+        self,
+        container_id: str,
+        command: list[str],
+        *,
+        workdir: str | None = None,
+        timeout: int = 60,
+    ) -> ExecResult:
+        return self._exec(container_id, command, workdir=workdir, timeout=timeout)
+
+    def read_file_in_container(self, container_id: str, path: str) -> str:
+        result = self._exec(container_id, ["cat", path])
+        return result.stdout
+
+    def write_file_in_container(self, container_id: str, path: str, content: str) -> None:
+        # Use tee to write content; pass via stdin-like approach with echo
+        # More robust: use docker cp or a heredoc approach
+        # We use printf to handle arbitrary content safely
+        self._exec(
+            container_id,
+            ["sh", "-c", f"mkdir -p \"$(dirname '{path}')\" && cat > '{path}'"],
+            stdin=content,
+        )
+
+    def destroy_container(self, container_id: str) -> None:
+        try:
+            self._docker.container.stop(container_id, time=10)
+        except docker_exceptions.NoSuchContainer:
+            return
+        except Exception:
+            logger.warning("Failed to stop container %s, forcing removal", container_id)
+
+        try:
+            self._docker.container.remove(container_id, force=True)
+        except docker_exceptions.NoSuchContainer:
+            pass
+        except Exception as exc:
+            logger.error("Failed to remove container %s: %s", container_id, exc)
+
+    def cleanup_orphaned_containers(self) -> None:
+        try:
+            containers = self._docker.container.list(
+                all=True,
+                filters={"name": "orchestrator-task-"},
+            )
+            for container in containers:
+                logger.info("Cleaning up orphaned container: %s", container.name)
+                self.destroy_container(container.id)
+        except Exception as exc:
+            logger.warning("Failed to list containers for cleanup: %s", exc)
+
+    def _exec(
+        self,
+        container_id: str,
+        command: list[str],
+        *,
+        workdir: str | None = None,
+        timeout: int = 60,
+        stdin: str | None = None,
+    ) -> ExecResult:
+        try:
+            kwargs: dict = {"tty": False}
+            if workdir:
+                kwargs["workdir"] = workdir
+            if stdin is not None:
+                # Write content via docker exec with stdin
+                import subprocess
+
+                exec_cmd = ["docker", "exec", "-i"]
+                if workdir:
+                    exec_cmd.extend(["-w", workdir])
+                exec_cmd.append(container_id)
+                exec_cmd.extend(command)
+                proc = subprocess.run(
+                    exec_cmd,
+                    input=stdin,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                if proc.returncode != 0:
+                    raise ContainerError(
+                        f"Command failed (exit {proc.returncode}): {proc.stderr}"
+                    )
+                return ExecResult(
+                    exit_code=proc.returncode,
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                )
+
+            output = self._docker.execute(
+                container_id,
+                command,
+                **kwargs,
+            )
+            stdout = output if isinstance(output, str) else str(output)
+            return ExecResult(exit_code=0, stdout=stdout, stderr="")
+        except docker_exceptions.DockerException as exc:
+            raise ContainerError(f"Container exec failed: {exc}") from exc
+        except Exception as exc:
+            if isinstance(exc, ContainerError):
+                raise
+            raise ContainerError(f"Container exec failed: {exc}") from exc
