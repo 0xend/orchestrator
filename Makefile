@@ -5,6 +5,8 @@ SHELL := /bin/bash
 ORCHESTRATOR_FRONTEND_PORT ?= 13000
 ORCHESTRATOR_BACKEND_PORT ?= 18000
 DOCKER_COMPOSE := ORCHESTRATOR_FRONTEND_PORT=$(ORCHESTRATOR_FRONTEND_PORT) ORCHESTRATOR_BACKEND_PORT=$(ORCHESTRATOR_BACKEND_PORT) docker compose
+HEALTHCHECK_RETRIES ?= 60
+HEALTHCHECK_INTERVAL ?= 2
 
 .PHONY: \
 	help \
@@ -12,6 +14,8 @@ DOCKER_COMPOSE := ORCHESTRATOR_FRONTEND_PORT=$(ORCHESTRATOR_FRONTEND_PORT) ORCHE
 	shell-backend shell-frontend shell-db gh-login \
 	backend-install backend-test backend-lint backend-check backend-migrate backend-migrate-head \
 	frontend-install frontend-lint frontend-build frontend-check \
+	e2e-install e2e-install-browser e2e-prepare-ci e2e-up e2e-down wait-backend wait-frontend e2e-test \
+	ci-unit ci-e2e \
 	check clean
 
 help: ## Show available commands
@@ -48,6 +52,12 @@ help: ## Show available commands
 	@echo ""
 	@echo "Project:"
 	@echo "  make check                 Run backend-check + frontend-check"
+	@echo "  make ci-unit               Run backend + frontend CI unit checks"
+	@echo "  make ci-e2e                Run e2e tests against docker compose services"
+	@echo "  make e2e-prepare-ci        Install e2e deps + Playwright browser (CI mode)"
+	@echo "  make e2e-up                Start e2e docker services"
+	@echo "  make e2e-down              Stop e2e docker services and remove volumes"
+	@echo "  make e2e-test              Run Playwright e2e suite"
 	@echo "  make clean                 Remove local build/runtime caches"
 	@echo ""
 	@echo "Port overrides:"
@@ -121,8 +131,51 @@ frontend-build: ## Run frontend production build
 
 frontend-check: frontend-lint frontend-build ## Run frontend lint and build
 
+e2e-install: ## Install e2e dependencies
+	@cd e2e && npm ci
+
+e2e-install-browser: ## Install Playwright browser for local e2e runs
+	@cd e2e && npx playwright install chromium
+
+e2e-prepare-ci: e2e-install ## Install e2e deps and CI browser dependencies
+	@cd e2e && npx playwright install --with-deps chromium
+
+e2e-up: ## Start e2e services with docker compose
+	@$(DOCKER_COMPOSE) up -d --build
+
+e2e-down: ## Stop e2e services and remove volumes
+	@$(DOCKER_COMPOSE) down -v --remove-orphans
+
+wait-backend: ## Wait until backend health endpoint is ready
+	@for attempt in $$(seq 1 $(HEALTHCHECK_RETRIES)); do \
+		if curl -fsS "http://localhost:$(ORCHESTRATOR_BACKEND_PORT)/healthz" >/dev/null; then \
+			echo "Backend is ready"; \
+			exit 0; \
+		fi; \
+		sleep $(HEALTHCHECK_INTERVAL); \
+	done; \
+	echo "Backend failed readiness check"; \
+	exit 1
+
+wait-frontend: ## Wait until frontend endpoint is ready
+	@for attempt in $$(seq 1 $(HEALTHCHECK_RETRIES)); do \
+		if curl -fsS "http://localhost:$(ORCHESTRATOR_FRONTEND_PORT)" >/dev/null; then \
+			echo "Frontend is ready"; \
+			exit 0; \
+		fi; \
+		sleep $(HEALTHCHECK_INTERVAL); \
+	done; \
+	echo "Frontend failed readiness check"; \
+	exit 1
+
+e2e-test: ## Run Playwright e2e tests
+	@cd e2e && npm run test
+
+ci-unit: backend-install backend-check frontend-install frontend-check ## Run CI unit checks
+
+ci-e2e: e2e-up wait-backend wait-frontend e2e-test ## Run CI e2e checks against compose services
+
 check: backend-check frontend-check ## Run all local checks
 
 clean: ## Remove local caches and generated artifacts
-	@rm -rf backend/.pytest_cache backend/.ruff_cache frontend/.next
-
+	@rm -rf backend/.pytest_cache backend/.ruff_cache frontend/.next e2e/playwright-report e2e/test-results

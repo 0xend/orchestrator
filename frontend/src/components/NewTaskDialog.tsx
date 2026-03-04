@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import { RepoConfig } from "@/lib/types";
 
@@ -14,6 +14,20 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
   const [description, setDescription] = useState("");
   const [repoName, setRepoName] = useState(repos[0]?.name ?? "");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (repos.length === 0) {
+      setRepoName("");
+      return;
+    }
+
+    setRepoName((current) => {
+      if (current && repos.some((repo) => repo.name === current)) {
+        return current;
+      }
+      return repos[0].name;
+    });
+  }, [repos]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
