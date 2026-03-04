@@ -10,7 +10,7 @@ HEALTHCHECK_INTERVAL ?= 2
 
 .PHONY: \
 	help \
-	up down restart build ps logs logs-backend logs-frontend logs-db \
+	up down restart build ps ports-info logs logs-backend logs-frontend logs-db \
 	shell-backend shell-frontend shell-db gh-login \
 	backend-install backend-test backend-lint backend-check backend-migrate backend-migrate-head \
 	frontend-install frontend-lint frontend-build frontend-check \
@@ -27,6 +27,7 @@ help: ## Show available commands
 	@echo "  make restart               Restart containers"
 	@echo "  make build                 Build images"
 	@echo "  make ps                    Show compose service status"
+	@echo "  make ports-info            Show service URLs"
 	@echo "  make logs                  Follow all service logs"
 	@echo "  make logs-backend          Follow backend logs"
 	@echo "  make logs-frontend         Follow frontend logs"
@@ -78,6 +79,11 @@ build: ## Build compose images
 ps: ## Show service status
 	@$(DOCKER_COMPOSE) ps
 
+ports-info: ## Show service URLs
+	@echo "Frontend: http://localhost:$(ORCHESTRATOR_FRONTEND_PORT)"
+	@echo "Backend:  http://localhost:$(ORCHESTRATOR_BACKEND_PORT)"
+	@echo "API docs: http://localhost:$(ORCHESTRATOR_BACKEND_PORT)/docs"
+
 logs: ## Follow all service logs
 	@$(DOCKER_COMPOSE) logs -f
 
@@ -109,7 +115,7 @@ backend-test: ## Run backend tests
 	@cd backend && .venv/bin/pytest -q
 
 backend-lint: ## Run backend lint checks
-	@cd backend && .venv/bin/ruff check app tests
+	@cd backend && .venv/bin/ruff check
 
 backend-check: backend-lint backend-test ## Run backend lint and tests
 
@@ -148,7 +154,7 @@ e2e-down: ## Stop e2e services and remove volumes
 
 wait-backend: ## Wait until backend health endpoint is ready
 	@for attempt in $$(seq 1 $(HEALTHCHECK_RETRIES)); do \
-		if curl -fsS "http://localhost:$(ORCHESTRATOR_BACKEND_PORT)/healthz" >/dev/null; then \
+		if curl -fsS --max-time 5 "http://localhost:$(ORCHESTRATOR_BACKEND_PORT)/healthz" >/dev/null; then \
 			echo "Backend is ready"; \
 			exit 0; \
 		fi; \
@@ -159,7 +165,7 @@ wait-backend: ## Wait until backend health endpoint is ready
 
 wait-frontend: ## Wait until frontend endpoint is ready
 	@for attempt in $$(seq 1 $(HEALTHCHECK_RETRIES)); do \
-		if curl -fsS "http://localhost:$(ORCHESTRATOR_FRONTEND_PORT)" >/dev/null; then \
+		if curl -fsS --max-time 5 "http://localhost:$(ORCHESTRATOR_FRONTEND_PORT)" >/dev/null; then \
 			echo "Frontend is ready"; \
 			exit 0; \
 		fi; \

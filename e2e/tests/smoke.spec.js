@@ -20,4 +20,7 @@ test("user can create a task from the homepage", async ({ page }) => {
   await page.getByRole("button", { name: "Create Task" }).click();
 
   await expect(page.getByText(title).first()).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByText(title).first()).toBeVisible();
 });

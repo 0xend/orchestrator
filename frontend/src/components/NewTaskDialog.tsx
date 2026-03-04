@@ -15,6 +15,8 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
   const [repoName, setRepoName] = useState(repos[0]?.name ?? "");
   const [busy, setBusy] = useState(false);
 
+  const repoNamesKey = repos.map((r) => r.name).join("\0");
+
   useEffect(() => {
     if (repos.length === 0) {
       setRepoName("");
@@ -27,7 +29,8 @@ export function NewTaskDialog({ repos, onCreate }: NewTaskDialogProps) {
       }
       return repos[0].name;
     });
-  }, [repos]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoNamesKey]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();

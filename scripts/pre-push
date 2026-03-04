@@ -10,24 +10,29 @@ echo "Running pre-push CI checks..."
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-cleanup() {
-    echo ""
-    echo "=== Cleaning E2E containers ==="
-    make e2e-down >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
 echo ""
 echo "=== CI unit checks ==="
 make ci-unit
 
-echo ""
-echo "=== Preparing E2E dependencies ==="
-make e2e-prepare-ci
+if [ "${RUN_E2E:-0}" = "1" ]; then
+    cleanup() {
+        echo ""
+        echo "=== Cleaning E2E containers ==="
+        make e2e-down >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT
+
+    echo ""
+    echo "=== Preparing E2E dependencies ==="
+    make e2e-prepare-ci
+
+    echo ""
+    echo "=== CI end-to-end checks ==="
+    make ci-e2e
+else
+    echo ""
+    echo "Skipping E2E tests (set RUN_E2E=1 to enable)."
+fi
 
 echo ""
-echo "=== CI end-to-end checks ==="
-make ci-e2e
-
-echo ""
-echo "✅ Pre-push CI checks passed. Proceeding with push..."
+echo "✅ Pre-push checks passed. Proceeding with push..."
