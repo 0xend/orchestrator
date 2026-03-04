@@ -15,6 +15,7 @@ test("user can create a task from the homepage", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Orchestrator" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create Task" })).toBeEnabled();
 
+  await page.getByPlaceholder("https://github.com/owner/repo").fill("https://github.com/0xend/orchestrator");
   await page.getByPlaceholder("Title").fill(title);
   await page.getByPlaceholder("Describe the task").fill("Smoke test task from Playwright.");
   await page.getByRole("button", { name: "Create Task" }).click();
