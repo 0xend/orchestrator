@@ -164,9 +164,12 @@ setup_port_isolation() {
     local test_db=$((5433 + offset * 10))
     local backend=$((8000 + offset * 10))
     local frontend=$((3000 + offset * 10))
+    local orch_backend=$((18000 + offset * 10))
+    local orch_frontend=$((13000 + offset * 10))
 
     echo "    Offset: $offset"
     echo "    Ports: DB=$dev_db, Test DB=$test_db, Backend=$backend, Frontend=$frontend"
+    echo "    Docker: Backend=$orch_backend, Frontend=$orch_frontend"
 
     # Generate .worktree.env with generic per-worktree port data
     cat > "$worktree_path/.worktree.env" <<EOF
@@ -176,10 +179,13 @@ setup_port_isolation() {
 
 WORKTREE_NAME=$worktree_name
 WORKTREE_OFFSET=$offset
+COMPOSE_PROJECT_NAME=orchestrator-$worktree_name
 DEV_DB_PORT=$dev_db
 TEST_DB_PORT=$test_db
 BACKEND_PORT=$backend
 FRONTEND_PORT=$frontend
+ORCHESTRATOR_BACKEND_PORT=$orch_backend
+ORCHESTRATOR_FRONTEND_PORT=$orch_frontend
 EOF
 
     success "  Port isolation configured!"
