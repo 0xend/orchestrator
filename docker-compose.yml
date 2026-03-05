@@ -1,13 +1,12 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: orchestrator-db
     environment:
       POSTGRES_DB: orchestrator
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
-      - orchestrator_postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d orchestrator"]
       interval: 5s
@@ -18,7 +17,6 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    container_name: orchestrator-backend
     depends_on:
       db:
         condition: service_healthy
@@ -33,18 +31,22 @@ services:
       GIT_AUTHOR_NAME: Orchestrator Bot
       GIT_AUTHOR_EMAIL: orchestrator-bot@example.com
       GH_CLI_BIN: gh
+      WORKER_IMAGE: ${WORKER_IMAGE:-orchestrator-worker:latest}
+      DOCKER_NETWORK: ${COMPOSE_PROJECT_NAME:-orchestrator}_default
+      GH_TOKEN: ${GH_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ORCHESTRATOR_BACKEND_PORT: ${ORCHESTRATOR_BACKEND_PORT:-18000}
       ORCHESTRATOR_FRONTEND_PORT: ${ORCHESTRATOR_FRONTEND_PORT:-13000}
     ports:
       - "${ORCHESTRATOR_BACKEND_PORT:-18000}:8000"
     volumes:
       - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
 
   frontend:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-    container_name: orchestrator-frontend
     depends_on:
       - backend
     working_dir: /workspace/frontend
@@ -58,10 +60,10 @@ services:
       - "${ORCHESTRATOR_FRONTEND_PORT:-13000}:3000"
     volumes:
       - .:/workspace
-      - frontend_node_modules:/workspace/frontend/node_modules
-      - frontend_next_cache:/workspace/frontend/.next
+      - node_modules_cache:/workspace/frontend/node_modules
+      - next_cache:/workspace/frontend/.next
 
 volumes:
-  orchestrator_postgres_data:
-  frontend_node_modules:
-  frontend_next_cache:
+  postgres_data:
+  node_modules_cache:
+  next_cache:

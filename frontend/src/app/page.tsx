@@ -6,18 +6,15 @@ import { useEffect, useState } from "react";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { api } from "@/lib/api";
-import { RepoConfig, TaskSummary } from "@/lib/types";
+import { TaskSummary } from "@/lib/types";
 
 export default function HomePage() {
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
-  const [repos, setRepos] = useState<RepoConfig[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
     try {
-      const [taskData, repoData] = await Promise.all([api.listTasks(), api.listRepos()]);
-      setTasks(taskData);
-      setRepos(repoData);
+      setTasks(await api.listTasks());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -28,7 +25,7 @@ export default function HomePage() {
     void load();
   }, []);
 
-  async function createTask(input: { title: string; description: string; repo_name: string }) {
+  async function createTask(input: { title: string; description: string; github_url: string }) {
     await api.createTask(input);
     await load();
   }
@@ -37,7 +34,7 @@ export default function HomePage() {
     <div className="app-shell">
       <Sidebar tasks={tasks} />
       <main className="main stack-lg">
-        <NewTaskDialog repos={repos} onCreate={createTask} />
+        <NewTaskDialog onCreate={createTask} />
 
         <section className="panel">
           <h3>Task List</h3>
@@ -48,7 +45,7 @@ export default function HomePage() {
                 <span className="status-badge" data-status={task.status}>
                   {task.status.replace("_", " ")}
                 </span>
-                <span>{task.repo_name}</span>
+                <span>{task.github_url}</span>
               </div>
             </Link>
           ))}

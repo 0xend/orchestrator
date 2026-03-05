@@ -2,15 +2,23 @@ SHELL := /bin/bash
 
 .DEFAULT_GOAL := help
 
+-include .worktree.env
+
+COMPOSE_PROJECT_NAME ?= orchestrator
+WORKER_IMAGE ?= orchestrator-worker:latest
 ORCHESTRATOR_FRONTEND_PORT ?= 13000
 ORCHESTRATOR_BACKEND_PORT ?= 18000
-DOCKER_COMPOSE := ORCHESTRATOR_FRONTEND_PORT=$(ORCHESTRATOR_FRONTEND_PORT) ORCHESTRATOR_BACKEND_PORT=$(ORCHESTRATOR_BACKEND_PORT) docker compose
+DOCKER_COMPOSE := COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME) \
+  WORKER_IMAGE=$(WORKER_IMAGE) \
+  ORCHESTRATOR_FRONTEND_PORT=$(ORCHESTRATOR_FRONTEND_PORT) \
+  ORCHESTRATOR_BACKEND_PORT=$(ORCHESTRATOR_BACKEND_PORT) \
+  docker compose
 HEALTHCHECK_RETRIES ?= 60
 HEALTHCHECK_INTERVAL ?= 2
 
 .PHONY: \
 	help \
-	up down restart build ps ports-info logs logs-backend logs-frontend logs-db \
+	up down restart build build-worker ps ports-info logs logs-backend logs-frontend logs-db \
 	shell-backend shell-frontend shell-db gh-login \
 	backend-install backend-test backend-lint backend-check backend-migrate backend-migrate-head \
 	frontend-install frontend-lint frontend-build frontend-check \
@@ -26,6 +34,7 @@ help: ## Show available commands
 	@echo "  make down                  Stop and remove containers"
 	@echo "  make restart               Restart containers"
 	@echo "  make build                 Build images"
+	@echo "  make build-worker          Build task worker Docker image"
 	@echo "  make ps                    Show compose service status"
 	@echo "  make ports-info            Show service URLs"
 	@echo "  make logs                  Follow all service logs"
@@ -64,7 +73,7 @@ help: ## Show available commands
 	@echo "Port overrides:"
 	@echo "  ORCHESTRATOR_FRONTEND_PORT=3000 ORCHESTRATOR_BACKEND_PORT=8000 make up"
 
-up: ## Start containers in detached mode with build
+up: build-worker ## Start containers in detached mode with build
 	@$(DOCKER_COMPOSE) up -d --build
 
 down: ## Stop and remove containers
@@ -73,8 +82,11 @@ down: ## Stop and remove containers
 restart: ## Restart compose services
 	@$(DOCKER_COMPOSE) restart
 
-build: ## Build compose images
+build: build-worker ## Build compose images
 	@$(DOCKER_COMPOSE) build
+
+build-worker: ## Build the task worker Docker image
+	@docker build -t $(WORKER_IMAGE) worker/
 
 ps: ## Show service status
 	@$(DOCKER_COMPOSE) ps

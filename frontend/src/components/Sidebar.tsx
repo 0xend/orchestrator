@@ -10,9 +10,9 @@ interface SidebarProps {
 export function Sidebar({ tasks, selectedTaskId }: SidebarProps) {
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand">
+      <Link href="/" className="sidebar-brand">
         <h2>Orchestrator</h2>
-      </div>
+      </Link>
       <div className="section-label">Tasks</div>
       {tasks.map((task) => (
         <Link

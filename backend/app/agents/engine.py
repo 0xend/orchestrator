@@ -3,11 +3,15 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from anthropic import AsyncAnthropic
 
 from app.agents.tools import ToolContext, execute_tool
 from app.db.models import AgentSession
+
+if TYPE_CHECKING:
+    from app.services.container_manager import ContainerManager
 
 
 @dataclass(slots=True)
@@ -24,8 +28,12 @@ async def run_agent_loop(
     cwd: str,
     *,
     api_key: str | None = None,
-    model: str = "claude-3-7-sonnet-latest",
-    max_steps: int = 12,
+    model: str = "claude-sonnet-4-6",
+    max_tokens: int = 4096,
+    max_steps: int = 25,
+    container_id: str | None = None,
+    container_manager: ContainerManager | None = None,
+    conversation_history: list[dict] | None = None,
 ) -> None:
     """Run a minimal Claude tool loop with streaming-compatible event callbacks."""
     worktree_root = Path(cwd).resolve()
@@ -42,12 +50,12 @@ async def run_agent_loop(
         return
 
     client = AsyncAnthropic(api_key=api_key)
-    conversation: list[dict] = [{"role": "user", "content": user_message}]
+    conversation = list(conversation_history or []) + [{"role": "user", "content": user_message}]
 
     for _ in range(max_steps):
         response = await client.messages.create(
             model=model,
-            max_tokens=1200,
+            max_tokens=max_tokens,
             system=session.system_prompt,
             messages=conversation,
             tools=tools,
@@ -69,7 +77,12 @@ async def run_agent_loop(
                     )
                 )
                 tool_result = await execute_tool(
-                    ToolContext(worktree_root=worktree_root, role=session.agent_role),
+                    ToolContext(
+                        worktree_root=worktree_root,
+                        role=session.agent_role,
+                        container_id=container_id,
+                        container_manager=container_manager,
+                    ),
                     block.name,
                     dict(block.input),
                 )

@@ -14,6 +14,7 @@ export interface TaskSummary {
   description: string;
   status: TaskStatus;
   repo_name: string;
+  github_url: string;
   worktree_path: string | null;
   branch_name: string | null;
   preview_url: string | null;
@@ -43,24 +44,6 @@ export interface TaskSession {
 
 export interface TaskDetail extends TaskSummary {
   sessions: TaskSession[];
-}
-
-export interface RepoConfig {
-  name: string;
-  path: string;
-  description: string;
-  startup: {
-    command: string[];
-    cwd: string;
-    env: Record<string, string>;
-    ready_timeout_seconds: number;
-  };
-  preview: {
-    strategy: "fixed_url" | "stdout_regex" | "healthcheck";
-    url: string | null;
-    stdout_regex: string | null;
-    healthcheck_url: string | null;
-  };
 }
 
 export interface StreamEvent {

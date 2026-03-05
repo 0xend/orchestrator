@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     git_author_email: str = "orchestrator-bot@example.com"
     gh_cli_bin: str = "gh"
 
+    worker_image: str = "orchestrator-worker:latest"
+    docker_network: str = "orchestrator_default"
+    container_workspace: str = "/workspace"
+    gh_token: str = ""
+
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    agent_max_tokens: int = 4096
+    agent_max_steps: int = 25
+
 
 def _default_repos_config_path() -> Path:
     """Find repos.yaml by walking upward from this file, with a stable fallback."""

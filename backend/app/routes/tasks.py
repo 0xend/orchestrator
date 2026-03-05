@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
+import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,7 +16,7 @@ from app.agents.prompts import (
     PLANNER_PROMPT,
     PLAN_REVIEWER_PROMPT,
 )
-from app.config import get_repo_config
+from app.config import get_repo_config, get_settings
 from app.db.database import get_db
 from app.db.models import (
     AgentRole,
@@ -27,21 +29,37 @@ from app.db.models import (
     TaskStatus,
 )
 from app.security.auth import AuthenticatedUser, get_current_user
+from app.services.agent_runner import cancel_agent, is_agent_running, launch_agent
+from app.services.container_manager import ContainerError, ContainerManager
 from app.services.event_bus import event_bus
-from app.services.process_manager import ProcessStartupError, process_manager
+from app.services.process_manager import process_manager
 from app.services.pr_creator import PRCreationError, PRCreator
 from app.services.task_state import apply_transition
-from app.services.worktree import WorktreeError, WorktreeManager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
-worktree_manager = WorktreeManager()
+container_manager = ContainerManager()
 pr_creator = PRCreator()
+
+_GITHUB_URL_RE = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+)
+
+
+def _parse_github_url(url: str) -> tuple[str, str]:
+    m = _GITHUB_URL_RE.match(url)
+    if not m:
+        raise ValueError(f"Invalid GitHub URL: {url}")
+    return m.group("owner"), m.group("repo")
 
 
 class CreateTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
-    repo_name: str = Field(min_length=1, max_length=128)
+    github_url: str = Field(min_length=1, max_length=512)
 
 
 class SendMessageRequest(BaseModel):
@@ -56,6 +74,7 @@ def _task_payload(task: Task) -> dict:
         "description": task.description,
         "status": task.status.value,
         "repo_name": task.repo_name,
+        "github_url": task.github_url,
         "worktree_path": task.worktree_path,
         "branch_name": task.branch_name,
         "preview_url": task.preview_url,
@@ -149,23 +168,29 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    settings = get_settings()
     try:
-        get_repo_config(payload.repo_name)
-    except KeyError as exc:
+        owner, repo_short = _parse_github_url(payload.github_url)
+    except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
-    generated_plan = (
-        f"## Initial Plan\n\n"
-        f"1. Explore repository `{payload.repo_name}` for relevant modules.\n"
-        f"2. Implement requested changes for: {payload.title}.\n"
-        "3. Run verification and prepare review notes.\n"
-    )
+    repo_name = f"{owner}/{repo_short}"
+    has_agent_api_key = bool(settings.anthropic_api_key.strip())
+    generated_plan = None
+    if not has_agent_api_key:
+        generated_plan = (
+            f"## Initial Plan\n\n"
+            f"1. Explore repository `{repo_name}` for modules relevant to `{payload.title}`.\n"
+            f"2. Implement requested changes for: {payload.description}.\n"
+            "3. Run verification and prepare PR-ready review notes.\n"
+        )
 
     task = Task(
         owner_user_id=current_user.id,
         title=payload.title,
         description=payload.description,
-        repo_name=payload.repo_name,
+        repo_name=repo_name,
+        github_url=payload.github_url,
         status=TaskStatus.PLANNING,
         plan_markdown=generated_plan,
     )
@@ -173,17 +198,34 @@ async def create_task(
     session = AgentSession(
         task=task,
         agent_role=AgentRole.PLANNER,
-        status=AgentSessionStatus.ACTIVE,
+        status=AgentSessionStatus.ACTIVE if has_agent_api_key else AgentSessionStatus.COMPLETED,
         system_prompt=PLANNER_PROMPT,
+        completed_at=None if has_agent_api_key else datetime.now(UTC),
     )
 
     db.add(task)
     db.add(session)
     await db.commit()
     await db.refresh(task)
+    await db.refresh(session)
 
     await event_bus.publish(task.id, "status_change", {"status": task.status.value})
-    await event_bus.publish(task.id, "plan_ready", {"plan": task.plan_markdown})
+
+    if not has_agent_api_key:
+        await event_bus.publish(task.id, "plan_ready", {"plan": task.plan_markdown})
+        return _task_payload(task)
+
+    # Auto-trigger planner agent (container creation happens in background)
+    planner_message = f"Plan the implementation for: {task.title}\n\n{task.description}"
+    user_msg = Message(
+        session_id=session.id,
+        role=MessageRole.USER,
+        content={"text": planner_message},
+    )
+    db.add(user_msg)
+    await db.commit()
+    launch_agent(task.id, session.id, planner_message)
+
     return _task_payload(task)
 
 
@@ -232,12 +274,25 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    settings = get_settings()
     task = await _load_task_for_user(db, task_id, current_user.id, for_update=True)
 
     if task.status not in {TaskStatus.PLANNING, TaskStatus.IMPLEMENTING}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Task is not interactive in status '{task.status.value}'",
+        )
+
+    if is_agent_running(task_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent is already running for this task",
+        )
+
+    if not settings.anthropic_api_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ANTHROPIC_API_KEY is not configured",
         )
 
     session = await _ensure_active_session(db, task)
@@ -247,17 +302,10 @@ async def send_message(
         role=MessageRole.USER,
         content={"text": payload.content},
     )
-    assistant_message = Message(
-        session_id=session.id,
-        role=MessageRole.ASSISTANT,
-        content={"text": "Message received. Agent execution wiring is active in scaffold mode."},
-    )
-
     db.add(user_message)
-    db.add(assistant_message)
     await db.commit()
 
-    await event_bus.publish(task.id, "token", {"text": assistant_message.content["text"]})
+    launch_agent(task.id, session.id, payload.content)
     return {"ok": True}
 
 
@@ -304,16 +352,32 @@ async def approve_plan(
     )
     db.add(implementer_session)
 
-    repo = get_repo_config(task.repo_name)
+    settings = get_settings()
+    try:
+        repo_config = get_repo_config(task.repo_name)
+    except KeyError:
+        repo_config = None
 
     try:
-        if not task.worktree_path:
-            info = worktree_manager.create_worktree(str(repo.path), task.id)
-            task.worktree_path = info.worktree_path
+        if not task.container_id:
+            info = container_manager.create_task_container(
+                task.id,
+                task.github_url,
+                github_token=settings.gh_token or None,
+            )
+            task.container_id = info.container_id
+            task.worktree_path = info.workspace_path
             task.branch_name = info.branch_name
 
-        task.preview_url = await process_manager.start(task.id, repo, task.worktree_path)
-    except (WorktreeError, ProcessStartupError) as exc:
+        task.preview_url = await process_manager.start_in_container(
+            task.id,
+            task.container_id,
+            container_manager,
+            task.worktree_path,
+            startup=repo_config.startup if repo_config else None,
+            preview=repo_config.preview if repo_config else None,
+        )
+    except (ContainerError, Exception) as exc:
         task.status = TaskStatus.FAILED
         task.last_error = str(exc)
         task.version = (task.version or 0) + 1
@@ -365,12 +429,16 @@ async def request_review(
     if existing:
         return existing.response_json
 
-    repo = get_repo_config(task.repo_name)
     if not task.worktree_path:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Task has no worktree; approve-plan must run first",
         )
+
+    try:
+        repo_config = get_repo_config(task.repo_name)
+    except KeyError:
+        repo_config = None
 
     apply_transition(task, TaskStatus.CODE_REVIEW)
     review_session = AgentSession(
@@ -385,7 +453,7 @@ async def request_review(
         pr_result = pr_creator.create_or_update_pr(
             worktree_path=task.worktree_path,
             branch_name=task.branch_name,
-            base_branch=repo.pr.base_branch,
+            base_branch=repo_config.pr.base_branch if repo_config else None,
             title=f"{task.title} ({task.id[:8]})",
             body=(
                 "Automated PR created by Orchestrator.\n\n"
@@ -393,7 +461,9 @@ async def request_review(
                 f"- Repo: `{task.repo_name}`\n"
                 f"- Description: {task.description}\n"
             ),
-            draft=repo.pr.draft,
+            draft=repo_config.pr.draft if repo_config else True,
+            container_id=task.container_id,
+            container_manager=container_manager if task.container_id else None,
         )
     except PRCreationError as exc:
         task.last_error = str(exc)
@@ -422,11 +492,48 @@ async def request_review(
     )
     await db.commit()
 
+    # Destroy container after PR creation
+    if task.container_id:
+        container_manager.destroy_container(task.container_id)
+
     await process_manager.stop(task.id)
 
     await event_bus.publish(task.id, "review_done", {"pr_url": task.pr_url})
     await event_bus.publish(task.id, "status_change", {"status": task.status.value})
     return response
+
+
+@router.post("/{task_id}/stop")
+async def stop_agent(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Soft-stop: interrupt the running agent loop without cancelling the task."""
+    await _load_task_for_user(db, task_id, current_user.id)
+
+    if not is_agent_running(task_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No agent is currently running for this task",
+        )
+
+    cancel_agent(task_id)
+
+    # Mark the active session as COMPLETED so _ensure_active_session creates a fresh one
+    active_session_q = (
+        select(AgentSession)
+        .where(AgentSession.task_id == task_id, AgentSession.status == AgentSessionStatus.ACTIVE)
+        .order_by(AgentSession.started_at.desc())
+    )
+    active_session = (await db.execute(active_session_q)).scalars().first()
+    if active_session:
+        active_session.status = AgentSessionStatus.COMPLETED
+        active_session.completed_at = datetime.now(UTC)
+        await db.commit()
+
+    await event_bus.publish(task_id, "agent_stopped", {"task_id": task_id})
+    return {"ok": True}
 
 
 @router.delete("/{task_id}")
@@ -437,6 +544,8 @@ async def cancel_task(
 ) -> dict:
     task = await _load_task_for_user(db, task_id, current_user.id, for_update=True)
 
+    cancel_agent(task_id)
+
     if task.status in {
         TaskStatus.PLANNING,
         TaskStatus.PLAN_REVIEW,
@@ -445,12 +554,10 @@ async def cancel_task(
     }:
         apply_transition(task, TaskStatus.CANCELED)
 
-    if task.worktree_path:
-        await process_manager.stop(task.id)
-        try:
-            worktree_manager.remove_worktree(task.worktree_path)
-        except WorktreeError as exc:
-            task.last_error = str(exc)
+    if task.container_id:
+        container_manager.destroy_container(task.container_id)
+
+    await process_manager.stop(task.id)
 
     await db.commit()
     await event_bus.publish(task.id, "status_change", {"status": task.status.value})

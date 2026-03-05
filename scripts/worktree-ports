@@ -92,11 +92,15 @@ get_ports() {
     local test_db=$((5433 + offset * 10))
     local backend=$((8000 + offset * 10))
     local frontend=$((3000 + offset * 10))
+    local orch_backend=$((18000 + offset * 10))
+    local orch_frontend=$((13000 + offset * 10))
 
     echo "DEV_DB_PORT=$dev_db"
     echo "TEST_DB_PORT=$test_db"
     echo "BACKEND_PORT=$backend"
     echo "FRONTEND_PORT=$frontend"
+    echo "ORCHESTRATOR_BACKEND_PORT=$orch_backend"
+    echo "ORCHESTRATOR_FRONTEND_PORT=$orch_frontend"
 }
 
 # List all port allocations
@@ -108,8 +112,8 @@ list_allocations() {
 
     echo "Current port allocations:"
     echo ""
-    printf "  %-30s %-8s %-8s %-8s %-8s %-8s\n" "WORKTREE" "OFFSET" "DEV_DB" "TEST_DB" "BACKEND" "FRONTEND"
-    printf "  %-30s %-8s %-8s %-8s %-8s %-8s\n" "--------" "------" "------" "-------" "-------" "--------"
+    printf "  %-30s %-8s %-8s %-8s %-8s %-8s %-12s %-12s\n" "WORKTREE" "OFFSET" "DEV_DB" "TEST_DB" "BACKEND" "FRONTEND" "ORCH_BACKEND" "ORCH_FRONTEND"
+    printf "  %-30s %-8s %-8s %-8s %-8s %-8s %-12s %-12s\n" "--------" "------" "------" "-------" "-------" "--------" "------------" "-------------"
 
     while IFS=: read -r name offset; do
         [[ -z "$name" ]] && continue
@@ -117,7 +121,9 @@ list_allocations() {
         local test_db=$((5433 + offset * 10))
         local backend=$((8000 + offset * 10))
         local frontend=$((3000 + offset * 10))
-        printf "  %-30s %-8s %-8s %-8s %-8s %-8s\n" "$name" "$offset" "$dev_db" "$test_db" "$backend" "$frontend"
+        local orch_backend=$((18000 + offset * 10))
+        local orch_frontend=$((13000 + offset * 10))
+        printf "  %-30s %-8s %-8s %-8s %-8s %-8s %-12s %-12s\n" "$name" "$offset" "$dev_db" "$test_db" "$backend" "$frontend" "$orch_backend" "$orch_frontend"
     done < "$REGISTRY_FILE"
 }
 

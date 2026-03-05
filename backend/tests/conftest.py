@@ -12,23 +12,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     repos_yaml = tmp_path / "repos.yaml"
     repos_yaml.write_text(
         """
-repos:
-  - name: "sample-repo"
-    path: "/tmp"
-    description: "test"
-    startup:
-      command: ["echo", "ready"]
-      cwd: "."
-      env: {}
-      ready_timeout_seconds: 5
-    preview:
-      strategy: "fixed_url"
-      url: "http://localhost:3000"
-      stdout_regex: null
-      healthcheck_url: null
-    pr:
-      base_branch: "main"
-      draft: true
+repos: []
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -37,6 +21,7 @@ repos:
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("API_AUTH_REQUIRED", "false")
     monkeypatch.setenv("REPOS_CONFIG_PATH", str(repos_yaml))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
     from app.config import get_settings, load_repos_config
 

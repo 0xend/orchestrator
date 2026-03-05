@@ -1,3 +1,55 @@
+PLANNING_TOOL_DEFINITIONS: list[dict] = [
+    {
+        "name": "read_file",
+        "description": "Read UTF-8 text from a file inside the worktree",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "glob",
+        "description": "Return paths matching a glob pattern under the worktree",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "Search for text patterns in files under the worktree",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "glob": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "bash",
+        "description": "Run an allowlisted shell command in argv mode (no shell interpolation)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+            },
+            "required": ["command"],
+        },
+    },
+]
+
 TOOL_DEFINITIONS: list[dict] = [
     {
         "name": "read_file",

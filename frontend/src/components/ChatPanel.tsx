@@ -16,6 +16,7 @@ interface ChatPanelProps {
   task: TaskDetail;
   streamLogs: StreamLog[];
   onSend: (content: string) => Promise<void>;
+  onStop: () => Promise<void>;
   onApprovePlan: () => Promise<void>;
   onRequestReview: () => Promise<void>;
 }
@@ -36,6 +37,7 @@ export function ChatPanel({
   task,
   streamLogs,
   onSend,
+  onStop,
   onApprovePlan,
   onRequestReview,
 }: ChatPanelProps) {
@@ -115,6 +117,14 @@ export function ChatPanel({
         />
         <button type="submit" className="primary" disabled={!interactive || busy}>
           {busy ? "Sending..." : "Send"}
+        </button>
+        <button
+          type="button"
+          className="warn"
+          disabled={!interactive || busy}
+          onClick={() => void onStop()}
+        >
+          Stop
         </button>
       </form>
 
