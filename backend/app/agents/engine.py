@@ -28,7 +28,7 @@ async def run_agent_loop(
     cwd: str,
     *,
     api_key: str | None = None,
-    model: str = "claude-sonnet-4-5-20250514",
+    model: str = "claude-sonnet-4-6",
     max_tokens: int = 4096,
     max_steps: int = 25,
     container_id: str | None = None,

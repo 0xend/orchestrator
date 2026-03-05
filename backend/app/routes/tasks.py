@@ -480,6 +480,39 @@ async def request_review(
     return response
 
 
+@router.post("/{task_id}/stop")
+async def stop_agent(
+    task_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Soft-stop: interrupt the running agent loop without cancelling the task."""
+    await _load_task_for_user(db, task_id, current_user.id)
+
+    if not is_agent_running(task_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No agent is currently running for this task",
+        )
+
+    cancel_agent(task_id)
+
+    # Mark the active session as COMPLETED so _ensure_active_session creates a fresh one
+    active_session_q = (
+        select(AgentSession)
+        .where(AgentSession.task_id == task_id, AgentSession.status == AgentSessionStatus.ACTIVE)
+        .order_by(AgentSession.started_at.desc())
+    )
+    active_session = (await db.execute(active_session_q)).scalars().first()
+    if active_session:
+        active_session.status = AgentSessionStatus.COMPLETED
+        active_session.completed_at = datetime.now(UTC)
+        await db.commit()
+
+    await event_bus.publish(task_id, "agent_stopped", {"task_id": task_id})
+    return {"ok": True}
+
+
 @router.delete("/{task_id}")
 async def cancel_task(
     task_id: str,

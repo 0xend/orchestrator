@@ -54,7 +54,7 @@ export default function TaskDetailPage() {
           data: event.data,
         },
       ]);
-      if (event.event === "status_change" || event.event === "plan_ready" || event.event === "review_done") {
+      if (event.event === "status_change" || event.event === "plan_ready" || event.event === "review_done" || event.event === "agent_stopped") {
         void refresh();
       }
     },
@@ -67,6 +67,11 @@ export default function TaskDetailPage() {
 
   async function approvePlan() {
     await api.approvePlan(taskId, `approve-${Date.now()}`);
+    await refresh();
+  }
+
+  async function stopTask() {
+    await api.stopTask(taskId);
     await refresh();
   }
 
@@ -99,6 +104,7 @@ export default function TaskDetailPage() {
           task={task}
           streamLogs={streamLogs}
           onSend={sendMessage}
+          onStop={stopTask}
           onApprovePlan={approvePlan}
           onRequestReview={requestReview}
         />

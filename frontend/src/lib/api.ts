@@ -47,6 +47,10 @@ export const api = {
       method: "POST",
       headers: { "Idempotency-Key": key },
     }),
+  stopTask: (taskId: string) =>
+    request<{ ok: boolean }>(`/api/tasks/${taskId}/stop`, {
+      method: "POST",
+    }),
 };
 
 export function taskStreamUrl(taskId: string): string {
