@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 
@@ -28,11 +29,14 @@ from app.db.models import (
     TaskStatus,
 )
 from app.security.auth import AuthenticatedUser, get_current_user
+from app.services.agent_runner import cancel_agent, is_agent_running, launch_agent
 from app.services.container_manager import ContainerError, ContainerManager
 from app.services.event_bus import event_bus
 from app.services.process_manager import process_manager
 from app.services.pr_creator import PRCreationError, PRCreator
 from app.services.task_state import apply_transition
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 container_manager = ContainerManager()
@@ -171,13 +175,6 @@ async def create_task(
 
     repo_name = f"{owner}/{repo_short}"
 
-    generated_plan = (
-        f"## Initial Plan\n\n"
-        f"1. Explore repository `{repo_name}` for relevant modules.\n"
-        f"2. Implement requested changes for: {payload.title}.\n"
-        "3. Run verification and prepare review notes.\n"
-    )
-
     task = Task(
         owner_user_id=current_user.id,
         title=payload.title,
@@ -185,7 +182,6 @@ async def create_task(
         repo_name=repo_name,
         github_url=payload.github_url,
         status=TaskStatus.PLANNING,
-        plan_markdown=generated_plan,
     )
 
     session = AgentSession(
@@ -199,9 +195,21 @@ async def create_task(
     db.add(session)
     await db.commit()
     await db.refresh(task)
+    await db.refresh(session)
 
     await event_bus.publish(task.id, "status_change", {"status": task.status.value})
-    await event_bus.publish(task.id, "plan_ready", {"plan": task.plan_markdown})
+
+    # Auto-trigger planner agent (container creation happens in background)
+    planner_message = f"Plan the implementation for: {task.title}\n\n{task.description}"
+    user_msg = Message(
+        session_id=session.id,
+        role=MessageRole.USER,
+        content={"text": planner_message},
+    )
+    db.add(user_msg)
+    await db.commit()
+    launch_agent(task.id, session.id, planner_message)
+
     return _task_payload(task)
 
 
@@ -258,6 +266,12 @@ async def send_message(
             detail=f"Task is not interactive in status '{task.status.value}'",
         )
 
+    if is_agent_running(task_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent is already running for this task",
+        )
+
     session = await _ensure_active_session(db, task)
 
     user_message = Message(
@@ -265,17 +279,10 @@ async def send_message(
         role=MessageRole.USER,
         content={"text": payload.content},
     )
-    assistant_message = Message(
-        session_id=session.id,
-        role=MessageRole.ASSISTANT,
-        content={"text": "Message received. Agent execution wiring is active in scaffold mode."},
-    )
-
     db.add(user_message)
-    db.add(assistant_message)
     await db.commit()
 
-    await event_bus.publish(task.id, "token", {"text": assistant_message.content["text"]})
+    launch_agent(task.id, session.id, payload.content)
     return {"ok": True}
 
 
@@ -480,6 +487,8 @@ async def cancel_task(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     task = await _load_task_for_user(db, task_id, current_user.id, for_update=True)
+
+    cancel_agent(task_id)
 
     if task.status in {
         TaskStatus.PLANNING,

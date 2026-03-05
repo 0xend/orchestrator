@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     container_workspace: str = "/workspace"
     gh_token: str = ""
 
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5-20250514"
+    agent_max_tokens: int = 4096
+    agent_max_steps: int = 25
+
 
 def _default_repos_config_path() -> Path:
     """Find repos.yaml by walking upward from this file, with a stable fallback."""

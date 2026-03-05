@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -19,10 +20,22 @@ def _create_task(client):
     return response.json()
 
 
+def _set_plan(task_id: str, plan: str = "## Test Plan\n\n1. Test step.\n") -> None:
+    """Set plan_markdown on a task (planner agent doesn't run in tests)."""
+    from app.db.database import get_engine
+
+    db_path = str(get_engine().url).split("///", 1)[1]
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE tasks SET plan_markdown = ? WHERE id = ?", (plan, task_id))
+    conn.commit()
+    conn.close()
+
+
 def test_approve_plan_is_idempotent(client, monkeypatch):
     from app.routes import tasks as tasks_route
 
     task = _create_task(client)
+    _set_plan(task["id"])
 
     monkeypatch.setattr(
         tasks_route,
@@ -61,6 +74,7 @@ def test_request_review_failure_marks_task_failed(client, monkeypatch):
     from app.routes import tasks as tasks_route
 
     task = _create_task(client)
+    _set_plan(task["id"])
 
     monkeypatch.setattr(
         tasks_route,
@@ -111,6 +125,7 @@ def test_request_review_is_idempotent_on_success(client, monkeypatch):
     from app.routes import tasks as tasks_route
 
     task = _create_task(client)
+    _set_plan(task["id"])
 
     monkeypatch.setattr(
         tasks_route,
@@ -195,6 +210,7 @@ def test_cancel_task_destroys_container(client, monkeypatch):
     from app.routes import tasks as tasks_route
 
     task = _create_task(client)
+    _set_plan(task["id"])
 
     destroy_mock = Mock()
     monkeypatch.setattr(
