@@ -179,6 +179,7 @@ def test_create_task_returns_github_url(client):
     task = _create_task(client)
     assert task["github_url"] == "https://github.com/owner/sample-repo"
     assert task["repo_name"] == "owner/sample-repo"
+    assert task["plan_markdown"] is not None
 
 
 def test_create_task_rejects_invalid_github_url(client):
@@ -204,6 +205,18 @@ def test_create_task_rejects_unexpected_runtime_config_fields(client):
         },
     )
     assert response.status_code == 422
+
+
+def test_send_message_requires_anthropic_key(client):
+    task = _create_task(client)
+
+    response = client.post(
+        f"/api/tasks/{task['id']}/messages",
+        json={"content": "Please continue"},
+    )
+
+    assert response.status_code == 503
+    assert "ANTHROPIC_API_KEY" in response.text
 
 
 def test_cancel_task_destroys_container(client, monkeypatch):

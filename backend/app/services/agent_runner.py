@@ -24,6 +24,7 @@ from app.services.event_bus import event_bus
 logger = logging.getLogger(__name__)
 
 _running_agents: dict[str, asyncio.Task] = {}
+_user_cancelled_tasks: set[str] = set()
 
 
 def is_agent_running(task_id: str) -> bool:
@@ -34,8 +35,10 @@ def is_agent_running(task_id: str) -> bool:
 def cancel_agent(task_id: str) -> bool:
     task = _running_agents.pop(task_id, None)
     if task and not task.done():
+        _user_cancelled_tasks.add(task_id)
         task.cancel()
         return True
+    _user_cancelled_tasks.discard(task_id)
     return False
 
 
@@ -66,11 +69,11 @@ async def _run_agent(task_id: str, session_id: str, user_message: str) -> None:
             ).scalar_one()
             task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one()
 
-            # Create container if not yet provisioned (runs in thread to avoid blocking)
+            use_container_tools = task.container_id is not None
+
+            # Provision isolated workspace container for remote-repo tasks.
             if not task.container_id and task.github_url:
                 try:
-                    import asyncio
-
                     info = await asyncio.to_thread(
                         container_manager.create_task_container,
                         task.id,
@@ -84,11 +87,14 @@ async def _run_agent(task_id: str, session_id: str, user_message: str) -> None:
                     await event_bus.publish(
                         task_id, "container_ready", {"container_id": info.container_id}
                     )
-                except Exception:
-                    logger.warning(
-                        "Container creation failed for task %s, agent will run without tools",
-                        task_id,
-                    )
+                    use_container_tools = True
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Container provisioning failed for task {task_id}: {exc}"
+                    ) from exc
+
+            if not task.worktree_path:
+                raise RuntimeError(f"Task {task_id} has no workspace path")
 
             history = await _load_conversation_history(db, session_id)
 
@@ -134,13 +140,13 @@ async def _run_agent(task_id: str, session_id: str, user_message: str) -> None:
                 user_message=user_message,
                 tools=tools,
                 on_event=on_event,
-                cwd=task.worktree_path or "/workspace",
+                cwd=task.worktree_path,
                 api_key=settings.anthropic_api_key,
                 model=settings.anthropic_model,
                 max_tokens=settings.agent_max_tokens,
                 max_steps=settings.agent_max_steps,
-                container_id=task.container_id,
-                container_manager=container_manager if task.container_id else None,
+                container_id=task.container_id if use_container_tools else None,
+                container_manager=container_manager if use_container_tools else None,
                 conversation_history=history,
             )
 
@@ -170,7 +176,11 @@ async def _run_agent(task_id: str, session_id: str, user_message: str) -> None:
 
     except asyncio.CancelledError:
         logger.info("Agent cancelled for task %s", task_id)
-        await _mark_session_failed(session_maker, session_id)
+        if task_id in _user_cancelled_tasks:
+            _user_cancelled_tasks.discard(task_id)
+            await _mark_session_completed(session_maker, session_id)
+        else:
+            await _mark_session_failed(session_maker, session_id)
         raise
 
     except Exception:
@@ -203,6 +213,20 @@ async def _mark_session_failed(
             await event_bus.publish(task_id, "error", {"message": "Agent execution failed"})
     except Exception:
         logger.exception("Failed to mark session %s as failed", session_id)
+
+
+async def _mark_session_completed(session_maker, session_id: str) -> None:
+    try:
+        async with session_maker() as db:
+            session = (
+                await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+            ).scalar_one_or_none()
+            if session:
+                session.status = AgentSessionStatus.COMPLETED
+                session.completed_at = datetime.now(UTC)
+                await db.commit()
+    except Exception:
+        logger.exception("Failed to mark session %s as completed", session_id)
 
 
 async def _load_conversation_history(db, session_id: str) -> list[dict]:

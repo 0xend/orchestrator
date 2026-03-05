@@ -49,11 +49,18 @@ class ContainerManager:
         # Idempotent: if container already exists, return its info
         try:
             existing = self._docker.container.inspect(container_name)
-            return ContainerInfo(
-                container_id=existing.id,
-                branch_name=branch_name,
-                workspace_path=workspace,
+            if self._is_task_workspace_ready(existing.id, workspace, branch_name):
+                return ContainerInfo(
+                    container_id=existing.id,
+                    branch_name=branch_name,
+                    workspace_path=workspace,
+                )
+            logger.warning(
+                "Existing container %s is not ready for task %s; recreating",
+                existing.id,
+                task_id,
             )
+            self.destroy_container(existing.id)
         except docker_exceptions.NoSuchContainer:
             pass
         except Exception as exc:
@@ -75,32 +82,46 @@ class ContainerManager:
                 detach=True,
                 envs=env_vars,
                 networks=[settings.docker_network],
+                labels={
+                    "orchestrator.managed": "true",
+                    "orchestrator.network": settings.docker_network,
+                    "orchestrator.task_id": task_id,
+                },
             )
         except Exception as exc:
             raise ContainerError(f"Failed to create container: {exc}") from exc
 
         container_id = container.id if hasattr(container, "id") else str(container)
 
-        # Clone the repo
-        clone_url = github_url
-        if github_token and clone_url.startswith("https://"):
-            clone_url = clone_url.replace("https://", f"https://x-access-token:{github_token}@")
-
         try:
+            clone_with_branch = self._build_clone_command(
+                github_url=github_url,
+                workspace=workspace,
+                base_branch=base_branch,
+                github_token=github_token,
+            )
+            clone_default = self._build_clone_command(
+                github_url=github_url,
+                workspace=workspace,
+                base_branch=None,
+                github_token=github_token,
+            )
+            try:
+                self._exec(container_id, clone_with_branch)
+            except ContainerError:
+                # Retry without --branch for repos where base_branch doesn't exist.
+                self._exec(container_id, ["rm", "-rf", workspace])
+                self._exec(container_id, clone_default)
+
+            # Create task branch
             self._exec(
                 container_id,
-                ["git", "clone", "--branch", base_branch, clone_url, workspace],
+                ["git", "checkout", "-b", branch_name],
+                workdir=workspace,
             )
-        except ContainerError:
-            # Retry without --branch for repos where base_branch doesn't exist
-            self._exec(container_id, ["git", "clone", clone_url, workspace])
-
-        # Create task branch
-        self._exec(
-            container_id,
-            ["git", "checkout", "-b", branch_name],
-            workdir=workspace,
-        )
+        except Exception:
+            self.destroy_container(container_id)
+            raise
 
         return ContainerInfo(
             container_id=container_id,
@@ -147,16 +168,63 @@ class ContainerManager:
             logger.error("Failed to remove container %s: %s", container_id, exc)
 
     def cleanup_orphaned_containers(self) -> None:
+        settings = get_settings()
         try:
             containers = self._docker.container.list(
                 all=True,
-                filters=[("name", "orchestrator-task-")],
+                filters=[
+                    ("label", "orchestrator.managed=true"),
+                    ("label", f"orchestrator.network={settings.docker_network}"),
+                ],
             )
             for container in containers:
                 logger.info("Cleaning up orphaned container: %s", container.name)
                 self.destroy_container(container.id)
         except Exception as exc:
             logger.warning("Failed to list containers for cleanup: %s", exc)
+
+    def _build_clone_command(
+        self,
+        *,
+        github_url: str,
+        workspace: str,
+        base_branch: str | None,
+        github_token: str | None,
+    ) -> list[str]:
+        cmd = ["git"]
+        if github_token and github_url.startswith("https://github.com/"):
+            credential_helper = (
+                "credential.helper=!f() { test \"$1\" = get && "
+                "echo username=x-access-token && echo password=$GH_TOKEN; }; f"
+            )
+            cmd.extend(["-c", credential_helper])
+
+        cmd.append("clone")
+        if base_branch:
+            cmd.extend(["--branch", base_branch])
+        cmd.extend([github_url, workspace])
+        return cmd
+
+    def _is_task_workspace_ready(
+        self, container_id: str, workspace: str, branch_name: str
+    ) -> bool:
+        try:
+            inside = self._exec(
+                container_id,
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                workdir=workspace,
+            )
+            if inside.stdout.strip() != "true":
+                return False
+
+            branch = self._exec(
+                container_id,
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                workdir=workspace,
+            )
+            return branch.stdout.strip() == branch_name
+        except ContainerError:
+            return False
 
     def _exec(
         self,

@@ -168,12 +168,22 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    settings = get_settings()
     try:
         owner, repo_short = _parse_github_url(payload.github_url)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     repo_name = f"{owner}/{repo_short}"
+    has_agent_api_key = bool(settings.anthropic_api_key.strip())
+    generated_plan = None
+    if not has_agent_api_key:
+        generated_plan = (
+            f"## Initial Plan\n\n"
+            f"1. Explore repository `{repo_name}` for modules relevant to `{payload.title}`.\n"
+            f"2. Implement requested changes for: {payload.description}.\n"
+            "3. Run verification and prepare PR-ready review notes.\n"
+        )
 
     task = Task(
         owner_user_id=current_user.id,
@@ -182,13 +192,15 @@ async def create_task(
         repo_name=repo_name,
         github_url=payload.github_url,
         status=TaskStatus.PLANNING,
+        plan_markdown=generated_plan,
     )
 
     session = AgentSession(
         task=task,
         agent_role=AgentRole.PLANNER,
-        status=AgentSessionStatus.ACTIVE,
+        status=AgentSessionStatus.ACTIVE if has_agent_api_key else AgentSessionStatus.COMPLETED,
         system_prompt=PLANNER_PROMPT,
+        completed_at=None if has_agent_api_key else datetime.now(UTC),
     )
 
     db.add(task)
@@ -198,6 +210,10 @@ async def create_task(
     await db.refresh(session)
 
     await event_bus.publish(task.id, "status_change", {"status": task.status.value})
+
+    if not has_agent_api_key:
+        await event_bus.publish(task.id, "plan_ready", {"plan": task.plan_markdown})
+        return _task_payload(task)
 
     # Auto-trigger planner agent (container creation happens in background)
     planner_message = f"Plan the implementation for: {task.title}\n\n{task.description}"
@@ -258,6 +274,7 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
+    settings = get_settings()
     task = await _load_task_for_user(db, task_id, current_user.id, for_update=True)
 
     if task.status not in {TaskStatus.PLANNING, TaskStatus.IMPLEMENTING}:
@@ -270,6 +287,12 @@ async def send_message(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Agent is already running for this task",
+        )
+
+    if not settings.anthropic_api_key.strip():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="ANTHROPIC_API_KEY is not configured",
         )
 
     session = await _ensure_active_session(db, task)

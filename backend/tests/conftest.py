@@ -21,6 +21,7 @@ repos: []
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setenv("API_AUTH_REQUIRED", "false")
     monkeypatch.setenv("REPOS_CONFIG_PATH", str(repos_yaml))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
 
     from app.config import get_settings, load_repos_config
 
