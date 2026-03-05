@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from app.config import RepoConfig, TaskStartupConfig, TaskPreviewConfig
+from app.config import PreviewConfig, RepoConfig, StartupConfig
 from app.security.path_guard import resolve_worktree_path
 
 if TYPE_CHECKING:
@@ -75,8 +76,8 @@ class ProcessManager:
         container_id: str,
         container_manager: ContainerManager,
         workspace: str,
-        startup: TaskStartupConfig | None = None,
-        preview: TaskPreviewConfig | None = None,
+        startup: StartupConfig | None = None,
+        preview: PreviewConfig | None = None,
     ) -> str | None:
         if startup is None or startup.command is None:
             return None
@@ -84,14 +85,16 @@ class ProcessManager:
         from app.services.container_manager import ContainerError
 
         cwd = f"{workspace}/{startup.cwd}" if startup.cwd != "." else workspace
-        cmd = startup.command
+        launch = shlex.join(startup.command)
+        env_parts = [f"{key}={shlex.quote(value)}" for key, value in startup.env.items()]
+        env_prefix = f"env {' '.join(env_parts)} " if env_parts else ""
 
         try:
             container_manager.exec_in_container(
                 container_id,
-                ["sh", "-c", " ".join(cmd) + " &"],
+                ["sh", "-c", f"{env_prefix}{launch} &"],
                 workdir=cwd,
-                timeout=startup.timeout,
+                timeout=startup.ready_timeout_seconds,
             )
         except ContainerError as exc:
             raise ProcessStartupError(f"Failed to start process in container: {exc}") from exc

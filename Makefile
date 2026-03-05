@@ -5,9 +5,11 @@ SHELL := /bin/bash
 -include .worktree.env
 
 COMPOSE_PROJECT_NAME ?= orchestrator
+WORKER_IMAGE ?= orchestrator-worker:latest
 ORCHESTRATOR_FRONTEND_PORT ?= 13000
 ORCHESTRATOR_BACKEND_PORT ?= 18000
 DOCKER_COMPOSE := COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME) \
+  WORKER_IMAGE=$(WORKER_IMAGE) \
   ORCHESTRATOR_FRONTEND_PORT=$(ORCHESTRATOR_FRONTEND_PORT) \
   ORCHESTRATOR_BACKEND_PORT=$(ORCHESTRATOR_BACKEND_PORT) \
   docker compose
@@ -71,7 +73,7 @@ help: ## Show available commands
 	@echo "Port overrides:"
 	@echo "  ORCHESTRATOR_FRONTEND_PORT=3000 ORCHESTRATOR_BACKEND_PORT=8000 make up"
 
-up: ## Start containers in detached mode with build
+up: build-worker ## Start containers in detached mode with build
 	@$(DOCKER_COMPOSE) up -d --build
 
 down: ## Stop and remove containers
@@ -80,11 +82,11 @@ down: ## Stop and remove containers
 restart: ## Restart compose services
 	@$(DOCKER_COMPOSE) restart
 
-build: ## Build compose images
+build: build-worker ## Build compose images
 	@$(DOCKER_COMPOSE) build
 
 build-worker: ## Build the task worker Docker image
-	@docker build -t orchestrator-worker:latest worker/
+	@docker build -t $(WORKER_IMAGE) worker/
 
 ps: ## Show service status
 	@$(DOCKER_COMPOSE) ps

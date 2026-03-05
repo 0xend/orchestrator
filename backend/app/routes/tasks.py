@@ -4,7 +4,7 @@ import re
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,7 +15,7 @@ from app.agents.prompts import (
     PLANNER_PROMPT,
     PLAN_REVIEWER_PROMPT,
 )
-from app.config import TaskPRConfig, TaskPreviewConfig, TaskStartupConfig, get_settings
+from app.config import get_repo_config, get_settings
 from app.db.database import get_db
 from app.db.models import (
     AgentRole,
@@ -51,12 +51,11 @@ def _parse_github_url(url: str) -> tuple[str, str]:
 
 
 class CreateTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
     github_url: str = Field(min_length=1, max_length=512)
-    startup: TaskStartupConfig | None = None
-    preview: TaskPreviewConfig | None = None
-    pr: TaskPRConfig | None = None
 
 
 class SendMessageRequest(BaseModel):
@@ -324,6 +323,10 @@ async def approve_plan(
     db.add(implementer_session)
 
     settings = get_settings()
+    try:
+        repo_config = get_repo_config(task.repo_name)
+    except KeyError:
+        repo_config = None
 
     try:
         if not task.container_id:
@@ -341,6 +344,8 @@ async def approve_plan(
             task.container_id,
             container_manager,
             task.worktree_path,
+            startup=repo_config.startup if repo_config else None,
+            preview=repo_config.preview if repo_config else None,
         )
     except (ContainerError, Exception) as exc:
         task.status = TaskStatus.FAILED
@@ -400,7 +405,10 @@ async def request_review(
             detail="Task has no worktree; approve-plan must run first",
         )
 
-    pr_config = TaskPRConfig()
+    try:
+        repo_config = get_repo_config(task.repo_name)
+    except KeyError:
+        repo_config = None
 
     apply_transition(task, TaskStatus.CODE_REVIEW)
     review_session = AgentSession(
@@ -415,7 +423,7 @@ async def request_review(
         pr_result = pr_creator.create_or_update_pr(
             worktree_path=task.worktree_path,
             branch_name=task.branch_name,
-            base_branch=pr_config.base_branch,
+            base_branch=repo_config.pr.base_branch if repo_config else None,
             title=f"{task.title} ({task.id[:8]})",
             body=(
                 "Automated PR created by Orchestrator.\n\n"
@@ -423,7 +431,7 @@ async def request_review(
                 f"- Repo: `{task.repo_name}`\n"
                 f"- Description: {task.description}\n"
             ),
-            draft=pr_config.draft,
+            draft=repo_config.pr.draft if repo_config else True,
             container_id=task.container_id,
             container_manager=container_manager if task.container_id else None,
         )

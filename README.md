@@ -2,9 +2,16 @@
 
 ## Run With Docker
 
-1. Build and start services:
+1. Build task worker image and start services:
 
 ```bash
+make up
+```
+
+If you prefer plain compose commands, build the worker image first:
+
+```bash
+make build-worker
 docker compose up --build
 ```
 

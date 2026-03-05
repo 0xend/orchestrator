@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 from dataclasses import dataclass
 
 from python_on_whales import DockerClient, exceptions as docker_exceptions
@@ -55,6 +56,8 @@ class ContainerManager:
             )
         except docker_exceptions.NoSuchContainer:
             pass
+        except Exception as exc:
+            raise ContainerError(f"Failed to inspect existing container: {exc}") from exc
 
         env_vars: dict[str, str] = {
             "GIT_AUTHOR_NAME": settings.git_author_name,
@@ -120,12 +123,11 @@ class ContainerManager:
         return result.stdout
 
     def write_file_in_container(self, container_id: str, path: str, content: str) -> None:
-        # Use tee to write content; pass via stdin-like approach with echo
-        # More robust: use docker cp or a heredoc approach
-        # We use printf to handle arbitrary content safely
+        quoted_path = shlex.quote(path)
+        quoted_dir = shlex.quote(path.rsplit("/", 1)[0] if "/" in path else ".")
         self._exec(
             container_id,
-            ["sh", "-c", f"mkdir -p \"$(dirname '{path}')\" && cat > '{path}'"],
+            ["sh", "-c", f"mkdir -p {quoted_dir} && cat > {quoted_path}"],
             stdin=content,
         )
 
@@ -148,7 +150,7 @@ class ContainerManager:
         try:
             containers = self._docker.container.list(
                 all=True,
-                filters={"name": "orchestrator-task-"},
+                filters=[("name", "orchestrator-task-")],
             )
             for container in containers:
                 logger.info("Cleaning up orphaned container: %s", container.name)

@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import posixpath
 import re
+import shlex
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.db.models import AgentRole
-from app.security.command_runner import CommandPolicy, run_command
-from app.security.path_guard import resolve_worktree_path
+from app.security.command_runner import CommandPolicy, CommandPolicyError, run_command
+from app.security.path_guard import PathSecurityError, resolve_worktree_path
 
 if TYPE_CHECKING:
     from app.services.container_manager import ContainerManager
@@ -34,9 +36,35 @@ def _policy_for_role(role: AgentRole) -> CommandPolicy:
     return CommandPolicy(allowed_commands=FULL_COMMANDS, timeout_seconds=45, max_output_bytes=128_000)
 
 
+def _resolve_container_path(root: Path, user_path: str) -> str:
+    root_path = posixpath.normpath(root.as_posix())
+    if not root_path.startswith("/"):
+        raise PathSecurityError(f"Container root must be absolute: {root_path}")
+
+    candidate = user_path if user_path.startswith("/") else f"{root_path.rstrip('/')}/{user_path}"
+    resolved = posixpath.normpath(candidate)
+
+    if resolved != root_path and not resolved.startswith(f"{root_path.rstrip('/')}/"):
+        raise PathSecurityError(f"Path escapes worktree: {resolved}")
+
+    relative = resolved[len(root_path) :].lstrip("/")
+    if relative and relative.split("/", 1)[0] == ".git":
+        raise PathSecurityError("Access to .git internals is not allowed")
+
+    return resolved
+
+
+def _container_relative_path(root: Path, full_path: str) -> str:
+    root_path = posixpath.normpath(root.as_posix())
+    if full_path == root_path:
+        return "."
+    prefix = f"{root_path.rstrip('/')}/"
+    return full_path.removeprefix(prefix)
+
+
 async def read_file(ctx: ToolContext, path: str, offset: int = 0, limit: int | None = None) -> str:
     if ctx.container_id and ctx.container_manager:
-        full_path = f"{ctx.worktree_root}/{path}" if not path.startswith("/") else path
+        full_path = _resolve_container_path(ctx.worktree_root, path)
         content = ctx.container_manager.read_file_in_container(ctx.container_id, full_path)
         if offset:
             content = content[offset:]
@@ -55,7 +83,7 @@ async def read_file(ctx: ToolContext, path: str, offset: int = 0, limit: int | N
 
 async def write_file(ctx: ToolContext, path: str, content: str) -> dict:
     if ctx.container_id and ctx.container_manager:
-        full_path = f"{ctx.worktree_root}/{path}" if not path.startswith("/") else path
+        full_path = _resolve_container_path(ctx.worktree_root, path)
         ctx.container_manager.write_file_in_container(ctx.container_id, full_path, content)
         return {"path": full_path, "bytes": len(content.encode("utf-8"))}
 
@@ -73,7 +101,7 @@ async def write_file(ctx: ToolContext, path: str, content: str) -> dict:
 
 async def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: str) -> dict:
     if ctx.container_id and ctx.container_manager:
-        full_path = f"{ctx.worktree_root}/{path}" if not path.startswith("/") else path
+        full_path = _resolve_container_path(ctx.worktree_root, path)
         existing = ctx.container_manager.read_file_in_container(ctx.container_id, full_path)
         if old_string not in existing:
             raise ValueError("old_string not found in file")
@@ -92,15 +120,15 @@ async def edit_file(ctx: ToolContext, path: str, old_string: str, new_string: st
 
 async def glob(ctx: ToolContext, pattern: str, path: str | None = None) -> list[str]:
     if ctx.container_id and ctx.container_manager:
-        search_path = f"{ctx.worktree_root}/{path}" if path else str(ctx.worktree_root)
+        search_path = _resolve_container_path(ctx.worktree_root, path or ".")
         result = ctx.container_manager.exec_in_container(
             ctx.container_id,
             ["find", search_path, "-type", "f", "-name", pattern],
-            workdir=str(ctx.worktree_root),
+            workdir=ctx.worktree_root.as_posix(),
         )
         lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        root_prefix = str(ctx.worktree_root).rstrip("/") + "/"
-        return sorted(line.removeprefix(root_prefix) for line in lines)
+        safe_paths = [_resolve_container_path(ctx.worktree_root, line) for line in lines]
+        return sorted(_container_relative_path(ctx.worktree_root, line) for line in safe_paths)
 
     base = resolve_worktree_path(ctx.worktree_root, path or ".")
     matches: list[str] = []
@@ -118,15 +146,14 @@ async def grep(
     glob_pattern: str | None = None,
 ) -> list[dict]:
     if ctx.container_id and ctx.container_manager:
-        search_path = f"{ctx.worktree_root}/{path}" if path else str(ctx.worktree_root)
+        search_path = _resolve_container_path(ctx.worktree_root, path or ".")
         cmd = ["rg", "--json", pattern, search_path]
         if glob_pattern:
             cmd.extend(["--glob", glob_pattern])
         result = ctx.container_manager.exec_in_container(
-            ctx.container_id, cmd, workdir=str(ctx.worktree_root)
+            ctx.container_id, cmd, workdir=ctx.worktree_root.as_posix()
         )
         results: list[dict] = []
-        root_prefix = str(ctx.worktree_root).rstrip("/") + "/"
         for line in result.stdout.splitlines():
             if not line.strip():
                 continue
@@ -136,7 +163,8 @@ async def grep(
                 continue
             if entry.get("type") == "match":
                 data = entry["data"]
-                file_path = data["path"]["text"].removeprefix(root_prefix)
+                full_path = _resolve_container_path(ctx.worktree_root, data["path"]["text"])
+                file_path = _container_relative_path(ctx.worktree_root, full_path)
                 results.append({
                     "path": file_path,
                     "line": data["line_number"],
@@ -170,24 +198,21 @@ async def bash(ctx: ToolContext, command: str) -> dict:
     policy = _policy_for_role(ctx.role)
 
     if ctx.container_id and ctx.container_manager:
-        # Validate command policy on backend side before proxying
-        import shlex
-
         argv = shlex.split(command)
+        if not argv:
+            raise CommandPolicyError("Command must not be empty")
         if argv and policy.allowed_commands is not None and argv[0] not in policy.allowed_commands:
-            from app.security.command_runner import CommandPolicyError
-
             raise CommandPolicyError(f"Command '{argv[0]}' is not allowed")
 
         result = ctx.container_manager.exec_in_container(
             ctx.container_id,
-            ["sh", "-c", command],
-            workdir=str(ctx.worktree_root),
+            argv,
+            workdir=ctx.worktree_root.as_posix(),
             timeout=policy.timeout_seconds,
         )
         return {
-            "command": command,
-            "cwd": str(ctx.worktree_root),
+            "command": argv,
+            "cwd": ctx.worktree_root.as_posix(),
             "exit_code": result.exit_code,
             "stdout": result.stdout[:policy.max_output_bytes],
             "stderr": result.stderr[:policy.max_output_bytes],

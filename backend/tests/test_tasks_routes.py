@@ -178,6 +178,19 @@ def test_create_task_rejects_invalid_github_url(client):
     assert response.status_code == 400
 
 
+def test_create_task_rejects_unexpected_runtime_config_fields(client):
+    response = client.post(
+        "/api/tasks",
+        json={
+            "title": "Test",
+            "description": "details",
+            "github_url": "https://github.com/owner/sample-repo",
+            "startup": {"command": ["npm", "run", "dev"]},
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_cancel_task_destroys_container(client, monkeypatch):
     from app.routes import tasks as tasks_route
 

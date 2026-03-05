@@ -30,7 +30,7 @@ class PRCreator:
         *,
         worktree_path: str,
         branch_name: str | None,
-        base_branch: str,
+        base_branch: str | None,
         title: str,
         body: str,
         draft: bool,
@@ -64,7 +64,7 @@ class PRCreator:
         container_manager: ContainerManager,
         workspace: str,
         branch_name: str | None,
-        base_branch: str,
+        base_branch: str | None,
         title: str,
         body: str,
         draft: bool,
@@ -83,6 +83,12 @@ class PRCreator:
             branch_name = result.stdout.strip()
             if not branch_name:
                 raise PRCreationError("Current branch is empty")
+        if not base_branch:
+            base_branch = self._resolve_base_branch_in_container(
+                container_id=container_id,
+                container_manager=container_manager,
+                workspace=workspace,
+            )
 
         # Stage and commit
         container_manager.exec_in_container(
@@ -109,8 +115,8 @@ class PRCreator:
                     workdir=workspace,
                 )
                 commit_sha = sha_result.stdout.strip() or None
-            except ContainerError:
-                pass
+            except ContainerError as exc:
+                raise PRCreationError(f"Failed to commit changes: {exc}") from exc
 
         # Push
         try:
@@ -171,7 +177,7 @@ class PRCreator:
         *,
         worktree_path: str,
         branch_name: str | None,
-        base_branch: str,
+        base_branch: str | None,
         title: str,
         body: str,
         draft: bool,
@@ -183,6 +189,7 @@ class PRCreator:
             raise PRCreationError(f"Worktree path does not exist: {repo}")
 
         resolved_branch = branch_name or self._resolve_branch_name(repo)
+        resolved_base = base_branch or self._resolve_base_branch(repo)
 
         commit_sha = self._commit_changes_if_needed(
             repo,
@@ -210,7 +217,7 @@ class PRCreator:
             "pr",
             "create",
             "--base",
-            base_branch,
+            resolved_base,
             "--head",
             resolved_branch,
             "--title",
@@ -238,6 +245,44 @@ class PRCreator:
         if not branch_name:
             raise PRCreationError("Current branch is empty")
         return branch_name
+
+    def _resolve_base_branch_in_container(
+        self,
+        *,
+        container_id: str,
+        container_manager: ContainerManager,
+        workspace: str,
+    ) -> str:
+        try:
+            result = container_manager.exec_in_container(
+                container_id,
+                ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+                workdir=workspace,
+            )
+            ref = result.stdout.strip()
+            if ref.startswith("origin/"):
+                resolved = ref.split("/", 1)[1].strip()
+                if resolved:
+                    return resolved
+        except Exception:
+            pass
+        return "main"
+
+    def _resolve_base_branch(self, repo: Path) -> str:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+            cwd=str(repo),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            ref = result.stdout.strip()
+            if ref.startswith("origin/"):
+                resolved = ref.split("/", 1)[1].strip()
+                if resolved:
+                    return resolved
+        return "main"
 
     def _commit_changes_if_needed(
         self,
