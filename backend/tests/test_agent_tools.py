@@ -57,15 +57,14 @@ async def test_container_write_rejects_git_internals():
 
 
 @pytest.mark.asyncio
-async def test_container_bash_executes_directly_without_shell_wrapper():
+async def test_container_bash_wraps_command_in_shell():
     cm = FakeContainerManager()
-    result = await bash(_ctx(cm), "git status; rm -rf /")
+    await bash(_ctx(cm), "git status; rm -rf /")
 
     assert cm.exec_calls, "expected at least one exec call"
     command = cm.exec_calls[0]["command"]
-    assert command[0] == "git"
-    assert command[:2] != ["sh", "-c"]
-    assert result["command"][0] == "git"
+    assert command[:2] == ["sh", "-c"]
+    assert command[2] == "git status; rm -rf /"
 
 
 @pytest.mark.asyncio

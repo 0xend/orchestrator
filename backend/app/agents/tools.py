@@ -204,9 +204,10 @@ async def bash(ctx: ToolContext, command: str) -> dict:
         if argv and policy.allowed_commands is not None and argv[0] not in policy.allowed_commands:
             raise CommandPolicyError(f"Command '{argv[0]}' is not allowed")
 
+        # Wrap in sh -c so shell features (pipes, redirects, &&) work inside the container.
         result = ctx.container_manager.exec_in_container(
             ctx.container_id,
-            argv,
+            ["sh", "-c", command],
             workdir=ctx.worktree_root.as_posix(),
             timeout=policy.timeout_seconds,
         )

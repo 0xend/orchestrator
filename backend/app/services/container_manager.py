@@ -110,8 +110,13 @@ class ContainerManager:
                 self._exec(container_id, clone_with_branch)
             except ContainerError:
                 # Retry without --branch for repos where base_branch doesn't exist.
-                self._exec(container_id, ["rm", "-rf", workspace])
-                self._exec(container_id, clone_default)
+                # Use sh -c to avoid issues if workspace is also the container WORKDIR.
+                self._exec(
+                    container_id,
+                    ["sh", "-c", f"rm -rf {shlex.quote(workspace)} && mkdir -p {shlex.quote(workspace)}"],
+                    workdir="/",
+                )
+                self._exec(container_id, clone_default, workdir="/")
 
             # Create task branch
             self._exec(
