@@ -7,6 +7,12 @@ export type TaskStatus =
   | "failed"
   | "canceled";
 
+export interface ModelOption {
+  provider: string;
+  model_id: string;
+  display_name: string;
+}
+
 export interface TaskSummary {
   id: string;
   owner_user_id: string;
@@ -20,6 +26,8 @@ export interface TaskSummary {
   preview_url: string | null;
   plan_markdown: string | null;
   pr_url: string | null;
+  model_provider: string | null;
+  model_id: string | null;
   version: number;
   last_error: string | null;
   created_at: string | null;

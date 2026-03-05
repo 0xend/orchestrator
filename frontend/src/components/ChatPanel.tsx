@@ -77,9 +77,14 @@ export function ChatPanel({
     <section className="panel stack">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h3>{task.title}</h3>
-        <span className="status-badge" data-status={task.status}>
-          {task.status.replace("_", " ")}
-        </span>
+        <div className="row" style={{ gap: "0.5rem" }}>
+          {task.model_id && (
+            <span className="status-badge">{task.model_id}</span>
+          )}
+          <span className="status-badge" data-status={task.status}>
+            {task.status.replace("_", " ")}
+          </span>
+        </div>
       </div>
 
       <div className="chat-scroll">

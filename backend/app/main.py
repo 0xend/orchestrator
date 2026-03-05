@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import repos, stream, tasks
+from app.routes import models, repos, stream, tasks
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(models.router)
 app.include_router(repos.router)
 app.include_router(tasks.router)
 app.include_router(stream.router)

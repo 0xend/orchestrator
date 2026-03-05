@@ -77,6 +77,8 @@ class Task(Base, TimestampMixin):
     preview_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     plan_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     pr_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

@@ -16,6 +16,7 @@ from app.agents.prompts import (
     PLANNER_PROMPT,
     PLAN_REVIEWER_PROMPT,
 )
+from app.agents.model_registry import has_any_provider_key, has_provider_key
 from app.config import get_repo_config, get_settings
 from app.db.database import get_db
 from app.db.models import (
@@ -60,6 +61,8 @@ class CreateTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1)
     github_url: str = Field(min_length=1, max_length=512)
+    model_provider: str | None = None
+    model_id: str | None = None
 
 
 class SendMessageRequest(BaseModel):
@@ -80,6 +83,8 @@ def _task_payload(task: Task) -> dict:
         "preview_url": task.preview_url,
         "plan_markdown": task.plan_markdown,
         "pr_url": task.pr_url,
+        "model_provider": task.model_provider,
+        "model_id": task.model_id,
         "version": task.version,
         "last_error": task.last_error,
         "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -175,7 +180,14 @@ async def create_task(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     repo_name = f"{owner}/{repo_short}"
-    has_agent_api_key = bool(settings.anthropic_api_key.strip())
+
+    if payload.model_provider and not has_provider_key(payload.model_provider, settings):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"API key not configured for provider '{payload.model_provider}'",
+        )
+
+    has_agent_api_key = has_any_provider_key(settings)
     generated_plan = None
     if not has_agent_api_key:
         generated_plan = (
@@ -193,6 +205,8 @@ async def create_task(
         github_url=payload.github_url,
         status=TaskStatus.PLANNING,
         plan_markdown=generated_plan,
+        model_provider=payload.model_provider,
+        model_id=payload.model_id,
     )
 
     session = AgentSession(
@@ -289,10 +303,10 @@ async def send_message(
             detail="Agent is already running for this task",
         )
 
-    if not settings.anthropic_api_key.strip():
+    if not has_provider_key(task.model_provider, settings):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="ANTHROPIC_API_KEY is not configured",
+            detail="API key is not configured for this task's provider",
         )
 
     session = await _ensure_active_session(db, task)

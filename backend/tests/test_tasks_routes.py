@@ -216,7 +216,7 @@ def test_send_message_requires_anthropic_key(client):
     )
 
     assert response.status_code == 503
-    assert "ANTHROPIC_API_KEY" in response.text
+    assert "API key is not configured" in response.text
 
 
 def test_cancel_task_destroys_container(client, monkeypatch):

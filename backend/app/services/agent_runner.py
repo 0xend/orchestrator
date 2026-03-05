@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.agents.definitions import PLANNING_TOOL_DEFINITIONS, TOOL_DEFINITIONS
 from app.agents.engine import AgentEvent, run_agent_loop
+from app.agents.model_registry import has_any_provider_key, resolve_provider
 from app.config import get_settings
 from app.db.database import get_session_maker
 from app.db.models import (
@@ -44,8 +45,8 @@ def cancel_agent(task_id: str) -> bool:
 
 def launch_agent(task_id: str, session_id: str, user_message: str) -> None:
     settings = get_settings()
-    if not settings.anthropic_api_key:
-        logger.warning("ANTHROPIC_API_KEY not set, skipping agent launch for task %s", task_id)
+    if not has_any_provider_key(settings):
+        logger.warning("No LLM provider API key set, skipping agent launch for task %s", task_id)
         return
 
     if is_agent_running(task_id):
@@ -96,7 +97,14 @@ async def _run_agent(task_id: str, session_id: str, user_message: str) -> None:
             if not task.worktree_path:
                 raise RuntimeError(f"Task {task_id} has no workspace path")
 
-            history = await _load_conversation_history(db, session_id)
+            provider = resolve_provider(task.model_provider, task.model_id, settings)
+
+            db_messages = (
+                await db.execute(
+                    select(Message).where(Message.session_id == session_id).order_by(Message.id)
+                )
+            ).scalars().all()
+            history = provider.build_conversation(list(db_messages))
 
             tools = (
                 PLANNING_TOOL_DEFINITIONS
@@ -141,8 +149,7 @@ async def _run_agent(task_id: str, session_id: str, user_message: str) -> None:
                 tools=tools,
                 on_event=on_event,
                 cwd=task.worktree_path,
-                api_key=settings.anthropic_api_key,
-                model=settings.anthropic_model,
+                provider=provider,
                 max_tokens=settings.agent_max_tokens,
                 max_steps=settings.agent_max_steps,
                 container_id=task.container_id if use_container_tools else None,
@@ -229,59 +236,3 @@ async def _mark_session_completed(session_maker, session_id: str) -> None:
         logger.exception("Failed to mark session %s as completed", session_id)
 
 
-async def _load_conversation_history(db, session_id: str) -> list[dict]:
-    """Convert DB messages to Anthropic API conversation format."""
-    result = await db.execute(
-        select(Message).where(Message.session_id == session_id).order_by(Message.id)
-    )
-    messages = result.scalars().all()
-
-    if not messages:
-        return []
-
-    history: list[dict] = []
-    current_assistant_blocks: list[dict] = []
-
-    for msg in messages:
-        if msg.role == MessageRole.USER:
-            if current_assistant_blocks:
-                history.append({"role": "assistant", "content": current_assistant_blocks})
-                current_assistant_blocks = []
-            history.append({"role": "user", "content": msg.content.get("text", "")})
-
-        elif msg.role == MessageRole.ASSISTANT:
-            current_assistant_blocks.append(
-                {"type": "text", "text": msg.content.get("text", "")}
-            )
-
-        elif msg.role == MessageRole.TOOL_USE:
-            current_assistant_blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": msg.content.get("id", ""),
-                    "name": msg.content.get("tool", ""),
-                    "input": msg.content.get("input", {}),
-                }
-            )
-
-        elif msg.role == MessageRole.TOOL_RESULT:
-            if current_assistant_blocks:
-                history.append({"role": "assistant", "content": current_assistant_blocks})
-                current_assistant_blocks = []
-            history.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": msg.content.get("id", ""),
-                            "content": msg.content.get("output", ""),
-                        }
-                    ],
-                }
-            )
-
-    if current_assistant_blocks:
-        history.append({"role": "assistant", "content": current_assistant_blocks})
-
-    return history

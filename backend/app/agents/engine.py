@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from anthropic import AsyncAnthropic
-
+from app.agents.providers import LLMProvider
 from app.agents.tools import ToolContext, execute_tool
 from app.db.models import AgentSession
 
@@ -27,95 +26,66 @@ async def run_agent_loop(
     on_event: Callable[[AgentEvent], Awaitable[None]],
     cwd: str,
     *,
-    api_key: str | None = None,
-    model: str = "claude-sonnet-4-6",
+    provider: LLMProvider | None = None,
     max_tokens: int = 4096,
     max_steps: int = 25,
     container_id: str | None = None,
     container_manager: ContainerManager | None = None,
     conversation_history: list[dict] | None = None,
 ) -> None:
-    """Run a minimal Claude tool loop with streaming-compatible event callbacks."""
+    """Run a minimal LLM tool loop with streaming-compatible event callbacks."""
     worktree_root = Path(cwd).resolve()
 
-    if not api_key:
+    if not provider:
         await on_event(
             AgentEvent(
                 event="token",
                 data={
-                    "text": "ANTHROPIC_API_KEY is not configured. Agent loop scaffold is running in dry mode."
+                    "text": "No LLM provider configured. Agent loop scaffold is running in dry mode."
                 },
             )
         )
         return
 
-    client = AsyncAnthropic(api_key=api_key)
     conversation = list(conversation_history or []) + [{"role": "user", "content": user_message}]
 
     for _ in range(max_steps):
-        response = await client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=session.system_prompt,
+        response = await provider.chat(
+            system_prompt=session.system_prompt,
             messages=conversation,
             tools=tools,
+            max_tokens=max_tokens,
         )
 
-        assistant_content: list[dict] = []
-        issued_tool = False
+        conversation.append(response.raw_assistant_message)
 
-        for block in response.content:
-            if block.type == "text":
-                await on_event(AgentEvent(event="token", data={"text": block.text}))
-                assistant_content.append({"type": "text", "text": block.text})
-            elif block.type == "tool_use":
-                issued_tool = True
-                await on_event(
-                    AgentEvent(
-                        event="tool_use",
-                        data={"tool": block.name, "input": block.input, "id": block.id},
-                    )
-                )
-                tool_result = await execute_tool(
-                    ToolContext(
-                        worktree_root=worktree_root,
-                        role=session.agent_role,
-                        container_id=container_id,
-                        container_manager=container_manager,
-                    ),
-                    block.name,
-                    dict(block.input),
-                )
-                await on_event(
-                    AgentEvent(event="tool_result", data={"tool": block.name, "output": tool_result})
-                )
+        for text in response.text_blocks:
+            await on_event(AgentEvent(event="token", data={"text": text}))
 
-                assistant_content.append(
-                    {
-                        "type": "tool_use",
-                        "id": block.id,
-                        "name": block.name,
-                        "input": block.input,
-                    }
-                )
-                conversation.append({"role": "assistant", "content": assistant_content})
-                conversation.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": tool_result,
-                            }
-                        ],
-                    }
-                )
-                break
-
-        if not issued_tool:
-            conversation.append({"role": "assistant", "content": assistant_content})
+        if not response.tool_calls:
             return
+
+        for tc in response.tool_calls:
+            await on_event(
+                AgentEvent(
+                    event="tool_use",
+                    data={"tool": tc.name, "input": tc.input, "id": tc.id},
+                )
+            )
+            tool_result = await execute_tool(
+                ToolContext(
+                    worktree_root=worktree_root,
+                    role=session.agent_role,
+                    container_id=container_id,
+                    container_manager=container_manager,
+                ),
+                tc.name,
+                tc.input,
+            )
+            await on_event(
+                AgentEvent(event="tool_result", data={"tool": tc.name, "output": tool_result})
+            )
+            conversation.append(provider.format_tool_result(tc.id, tool_result))
 
     await on_event(
         AgentEvent(

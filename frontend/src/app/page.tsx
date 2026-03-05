@@ -25,7 +25,13 @@ export default function HomePage() {
     void load();
   }, []);
 
-  async function createTask(input: { title: string; description: string; github_url: string }) {
+  async function createTask(input: {
+    title: string;
+    description: string;
+    github_url: string;
+    model_provider?: string;
+    model_id?: string;
+  }) {
     await api.createTask(input);
     await load();
   }

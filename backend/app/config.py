@@ -61,6 +61,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o"
+    openai_compatible_api_key: str = ""
+    openai_compatible_model: str = ""
+    openai_compatible_base_url: str = ""
+    default_provider: str = "anthropic"
     agent_max_tokens: int = 4096
     agent_max_steps: int = 25
 
