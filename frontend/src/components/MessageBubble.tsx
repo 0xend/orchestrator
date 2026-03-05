@@ -3,7 +3,17 @@ interface MessageBubbleProps {
   text: string;
 }
 
+const ROLE_LABELS: Record<string, string> = {
+  user: "You",
+  assistant: "Assistant",
+  tool: "System",
+};
+
 export function MessageBubble({ role, text }: MessageBubbleProps) {
-  const className = role === "user" ? "message user" : "message assistant";
-  return <div className={className}>{text}</div>;
+  return (
+    <div>
+      <div className="message-role">{ROLE_LABELS[role]}</div>
+      <div className={`message ${role}`}>{text}</div>
+    </div>
+  );
 }

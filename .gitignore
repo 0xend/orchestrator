@@ -21,5 +21,8 @@ frontend/.env.local
 .worktree.env
 .worktree.startup.env
 
+# Claude Code
+.claude/worktrees/
+
 # macOS
 .DS_Store

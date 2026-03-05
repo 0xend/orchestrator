@@ -33,23 +33,26 @@ export default function HomePage() {
   return (
     <div className="app-shell">
       <Sidebar tasks={tasks} />
-      <main className="main stack">
+      <main className="main stack-lg">
         <NewTaskDialog onCreate={createTask} />
 
         <section className="panel">
-          <h3 style={{ marginTop: 0 }}>Task List</h3>
+          <h3>Task List</h3>
           {tasks.map((task) => (
             <Link key={task.id} href={`/tasks/${task.id}`} className="task-link">
-              <strong>{task.title}</strong>
-              <div style={{ color: "var(--muted)" }}>
-                {task.status} • {task.github_url}
+              <div className="task-link-title">{task.title}</div>
+              <div className="task-link-meta">
+                <span className="status-badge" data-status={task.status}>
+                  {task.status.replace("_", " ")}
+                </span>
+                <span>{task.github_url}</span>
               </div>
             </Link>
           ))}
-          {tasks.length === 0 ? <div style={{ color: "var(--muted)" }}>Create the first task.</div> : null}
+          {tasks.length === 0 ? <div className="empty-state">Create the first task.</div> : null}
         </section>
 
-        {error ? <section className="panel">Error: {error}</section> : null}
+        {error ? <div className="error-panel">Error: {error}</div> : null}
       </main>
     </div>
   );

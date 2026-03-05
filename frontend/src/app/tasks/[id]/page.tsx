@@ -79,7 +79,14 @@ export default function TaskDetailPage() {
     return (
       <div className="app-shell">
         <Sidebar tasks={tasks} selectedTaskId={taskId} />
-        <main className="main panel">Loading task...</main>
+        <main className="main">
+          <div className="loading-state" role="status" aria-live="polite">
+            <span className="text-muted">Loading task...</span>
+            <span className="loading-dot" aria-hidden="true" />
+            <span className="loading-dot" aria-hidden="true" />
+            <span className="loading-dot" aria-hidden="true" />
+          </div>
+        </main>
       </div>
     );
   }
@@ -87,7 +94,7 @@ export default function TaskDetailPage() {
   return (
     <div className="app-shell">
       <Sidebar tasks={tasks} selectedTaskId={taskId} />
-      <main className="main stack">
+      <main className="main stack-lg">
         <ChatPanel
           task={task}
           streamLogs={streamLogs}
@@ -96,7 +103,7 @@ export default function TaskDetailPage() {
           onRequestReview={requestReview}
         />
         <PreviewFrame previewUrl={task.preview_url} />
-        {error ? <div className="panel">Error: {error}</div> : null}
+        {error ? <div className="error-panel">Error: {error}</div> : null}
       </main>
     </div>
   );

@@ -31,7 +31,7 @@ export function NewTaskDialog({ onCreate }: NewTaskDialogProps) {
 
   return (
     <form className="panel stack" onSubmit={submit}>
-      <h3 style={{ margin: 0 }}>New Task</h3>
+      <h3>New Task</h3>
       <input
         value={githubUrl}
         onChange={(event) => setGithubUrl(event.target.value)}
@@ -42,13 +42,13 @@ export function NewTaskDialog({ onCreate }: NewTaskDialogProps) {
       <input
         value={title}
         onChange={(event) => setTitle(event.target.value)}
-        placeholder="Title"
+        placeholder="Task title"
         required
       />
       <textarea
         value={description}
         onChange={(event) => setDescription(event.target.value)}
-        placeholder="Describe the task"
+        placeholder="Describe what needs to be done..."
         rows={4}
         required
       />

@@ -20,6 +20,18 @@ interface ChatPanelProps {
   onRequestReview: () => Promise<void>;
 }
 
+function normalizeMessageRole(
+  role: "user" | "assistant" | "tool_use" | "tool_result",
+): "user" | "assistant" | "tool" {
+  if (role === "user") {
+    return "user";
+  }
+  if (role === "assistant") {
+    return "assistant";
+  }
+  return "tool";
+}
+
 export function ChatPanel({
   task,
   streamLogs,
@@ -62,26 +74,28 @@ export function ChatPanel({
   return (
     <section className="panel stack">
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h3 style={{ margin: 0 }}>{task.title}</h3>
-        <strong>{task.status}</strong>
+        <h3>{task.title}</h3>
+        <span className="status-badge" data-status={task.status}>
+          {task.status.replace("_", " ")}
+        </span>
       </div>
 
-      <div style={{ maxHeight: 360, overflowY: "auto", paddingRight: 4 }}>
+      <div className="chat-scroll">
         {flattenedMessages.map((msg) => (
           <MessageBubble
             key={msg.id}
-            role={msg.role === "user" ? "user" : "assistant"}
+            role={normalizeMessageRole(msg.role)}
             text={msg.text}
           />
         ))}
         {flattenedMessages.length === 0 ? (
-          <div style={{ color: "var(--muted)" }}>No messages yet.</div>
+          <div className="empty-state">No messages yet.</div>
         ) : null}
       </div>
 
       {streamLogs.length > 0 ? (
         <div className="stack">
-          <div style={{ color: "var(--muted)", fontSize: 13 }}>Live stream</div>
+          <div className="section-label">Live stream</div>
           {streamLogs.slice(-4).map((item) =>
             item.event === "tool_use" ? (
               <ToolCallDisplay key={item.id} tool={String(item.data.tool ?? "tool")} input={item.data} />
@@ -96,11 +110,11 @@ export function ChatPanel({
         <input
           value={message}
           onChange={(event) => setMessage(event.target.value)}
-          placeholder="Send message"
+          placeholder="Send a message..."
           disabled={!interactive || busy}
         />
         <button type="submit" className="primary" disabled={!interactive || busy}>
-          Send
+          {busy ? "Sending..." : "Send"}
         </button>
       </form>
 
